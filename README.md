@@ -1,9 +1,9 @@
 # 🌒 Eclipse Fantasy Semantic Search Engine
 
-[![Tests](https://img.shields.io/badge/Tests-18%20Passing-brightgreen.svg)](file:///backend/test/)
+[![Tests](https://img.shields.io/badge/Tests-18%20Passing-brightgreen.svg)](./backend/test/)
 [![Node Version](https://img.shields.io/badge/Node-%3E%3D18-blue.svg)](https://nodejs.org/)
 [![Database](https://img.shields.io/badge/MongoDB-Atlas%20Search-green.svg)](https://www.mongodb.com/atlas/database)
-[![AI Integration](https://img.shields.io/badge/AI-Gemini%20%7C%20Groq%20%7C%20OpenAI-orange.svg)](file:///backend/src/services/aiGraphService.js)
+[![AI Integration](https://img.shields.io/badge/AI-Gemini%20%7C%20Groq%20%7C%20OpenAI-orange.svg)](./backend/src/services/aiGraphService.js)
 
 A high-performance, deterministic semantic search engine and associative knowledge graph built specifically for fantasy, anime, and artistic wallpaper catalogs. 
 
@@ -15,26 +15,26 @@ Combines lightweight in-memory graph traversal (**Dial's Bounded Dijkstra**), **
 
 ```mermaid
 flowchart TD
-    UserQuery([User Search Query]) --> NLP[NLP Tokenizer & PoS Analyzer\n(textNlp.js)]
-    NLP --> Dijkstra[Dial's Bounded Dijkstra\n(semanticDijkstra.js)]
+    UserQuery(["User Search Query"]) --> NLP["NLP Tokenizer & PoS Analyzer<br/>(textNlp.js)"]
+    NLP --> Dijkstra["Dial's Bounded Dijkstra<br/>(semanticDijkstra.js)"]
     
-    subgraph GraphMemory [Semantic Memory Layer]
-        MemoryGraph[(In-Memory Adjacency Graph)] <--> MongoNodes[(MongoDB SemanticNode Collection)]
-        AIFallback[Multi-Provider AI Expansion\nGemini 2.5 Flash / Groq / OpenAI] -.-> MemoryGraph
+    subgraph GraphMemory ["Semantic Memory Layer"]
+        MemoryGraph[("In-Memory Adjacency Graph")] <--> MongoNodes[("MongoDB SemanticNode Collection")]
+        AIFallback["Multi-Provider AI Expansion<br/>(Gemini 2.5 Flash / Groq / OpenAI)"] -.-> MemoryGraph
     end
     
     Dijkstra <--> MemoryGraph
-    Dijkstra --> RankedTerms[Ranked & Weighted Expansion Terms]
+    Dijkstra --> RankedTerms["Ranked & Weighted Expansion Terms"]
     
-    RankedTerms --> SearchEngine{Search Engine Pipeline}
-    SearchEngine -->|Atlas Search| CompoundAtlas[Atlas Compound Pipeline\nAutocomplete + Must/Should Boosts]
-    SearchEngine -->|Fallback| MongoText[$text Search Pipeline]
+    RankedTerms --> SearchEngine{"Search Engine Pipeline"}
+    SearchEngine -->|Atlas Search| CompoundAtlas["Atlas Compound Pipeline<br/>(Autocomplete + Must/Should Boosts)"]
+    SearchEngine -->|Fallback| MongoText["MongoDB $text Search Pipeline"]
     
-    CompoundAtlas --> Visibility[Public Visibility Filter\n(visibilityFilter.js)]
+    CompoundAtlas --> Visibility["Public Visibility Filter<br/>(visibilityFilter.js)"]
     MongoText --> Visibility
     
-    Visibility --> CacheBuffer[LRU Buffer & Prefetch Cache\n(searchBufferCache.js)]
-    CacheBuffer --> Results([Zero-Duplicate Paginated DTOs])
+    Visibility --> CacheBuffer["LRU Buffer & Prefetch Cache<br/>(searchBufferCache.js)"]
+    CacheBuffer --> Results(["Zero-Duplicate Paginated DTOs"])
 ```
 
 - **Graph-Powered Query Expansion**: Evaluates relationships across synonyms, hyponyms, hypernyms, siblings, moods, aesthetics, and scene descriptors.
