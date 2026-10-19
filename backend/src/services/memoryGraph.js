@@ -45,6 +45,7 @@ function rebuildGraph(graph, nodes) {
 async function initMemoryGraph(SemanticNode = require('../models/SemanticNode')) {
   const nodes = await SemanticNode.find({}).select('word edges').lean();
   rebuildGraph(memoryGraph, nodes);
+  require('./neighborIndex').neighborIndex.build(memoryGraph); // precompute once at startup
   return memoryGraph.size;
 }
 

@@ -10,9 +10,12 @@
     "benchmark": "node scripts/benchmark-10k.js",
     "backfill:semantic": "node scripts/backfill-semantic-graph.js"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "compromise": "^14.14.0",
+    "lru-cache": "^11.5.3",
     "mongoose": "^8.24.5"
   }
 }

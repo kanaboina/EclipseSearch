@@ -1,6 +1,7 @@
 const SemanticNode = require('../models/SemanticNode');
 const AiIngestionJob = require('../models/AiIngestionJob');
 const { memoryGraph, addEdges } = require('./memoryGraph');
+const { neighborIndex } = require('./neighborIndex');
 const { extractCleanWords } = require('./textNlp');
 
 const TIMEOUT_MS = 10000;
@@ -145,7 +146,7 @@ async function findUnseenWords(words, Model = SemanticNode) {
 }
 
 /** Upsert edges (bulkWrite unordered) and hot-update the in-memory graph. */
-async function persistExpansionsToGraph(expansions, { Model = SemanticNode, graph = memoryGraph } = {}) {
+async function persistExpansionsToGraph(expansions, { Model = SemanticNode, graph = memoryGraph, index = neighborIndex } = {}) {
   const ops = Object.entries(expansions).map(([word, edges]) => ({
     updateOne: {
       filter: { word },
@@ -155,6 +156,8 @@ async function persistExpansionsToGraph(expansions, { Model = SemanticNode, grap
   }));
   if (ops.length) await Model.bulkWrite(ops, { ordered: false });
   for (const [word, edges] of Object.entries(expansions)) addEdges(graph, word, edges);
+  // Write-time only: refresh precomputed neighbor caches for the touched region.
+  if (index) index.update(graph, Object.keys(expansions));
 }
 
 async function expandWords(words, deps = {}) {

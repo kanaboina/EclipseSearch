@@ -1,3 +1,4 @@
+const { LRUCache } = require('lru-cache');
 const { memoryGraph: defaultGraph } = require('./memoryGraph');
 const { nlp, STOPWORDS, DOMAIN_STOPWORDS, singularize, normalizeToken } = require('./textNlp');
 
@@ -95,14 +96,54 @@ function lcsLength(a, b) {
   return prev[m];
 }
 
+const MAX_TYPO_TOKENS = 2; // anti-DoS: heavy string-distance fallbacks per query
+
+/** 32-bit presence mask: bit (c - 97) set for each a-z character. */
+function charMask(word) {
+  let m = 0;
+  for (let i = 0; i < word.length; i++) {
+    const c = word.charCodeAt(i) - 97;
+    if (c >= 0 && c < 26) m |= 1 << c;
+  }
+  return m >>> 0;
+}
+
+function popcount(x) {
+  x -= (x >>> 1) & 0x55555555;
+  x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+  return (((x + (x >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+}
+
+// Per-graph dictionary masks, rebuilt only when the vocabulary size changes.
+const maskStore = new WeakMap(); // graph -> { size, masks: Map<word, mask>, typoCache: LRUCache }
+function graphTypoState(graph) {
+  let st = maskStore.get(graph);
+  if (!st || st.size !== graph.size) {
+    const masks = new Map();
+    for (const w of graph.keys()) masks.set(w, charMask(w));
+    st = { size: graph.size, masks, typoCache: new LRUCache({ max: 5000 }) };
+    maskStore.set(graph, st);
+  }
+  return st;
+}
+
+const NO_MATCH = Symbol('no-match');
+
 /**
  * Scan graph keys for the best Sørensen–Dice LCS match: 2*LCS/(|A|+|B|).
- * O(1) branch-and-bound prunes candidates that cannot beat bestScore.
+ * Pruning: length bound, then a bitmask AND + popcount pre-check before the O(|A||B|) LCS.
+ * Results (including misses) are memoised in an LRU typoCache.
  * @returns {{word: string, similarity: number, initialCost: number} | null}
  */
 function findClosestWordByNormalizedLCS(query, graph = defaultGraph) {
   const A = String(query || '');
   if (!A || A.length > LCS_MAX_LEN) return null;
+  const { masks, typoCache } = graphTypoState(graph);
+  const cached = typoCache.get(A);
+  if (cached !== undefined) return cached === NO_MATCH ? null : cached;
+
+  const maskA = charMask(A);
+  const popA = popcount(maskA);
   let bestScore = 0;
   let bestWord = null;
   for (const B of graph.keys()) {
@@ -110,14 +151,23 @@ function findClosestWordByNormalizedLCS(query, graph = defaultGraph) {
     if (lb > LCS_MAX_LEN || lb === 0) continue;
     const total = A.length + lb;
     if ((2 * Math.min(A.length, lb)) / total <= bestScore) continue;
+    const maskB = masks.get(B);
+    if (popA && maskB) {
+      const shared = popcount((maskA & maskB) >>> 0);
+      if (shared < Math.ceil(LCS_MIN_SIMILARITY * Math.min(popA, popcount(maskB)) * 0.9)) continue;
+    }
     const score = (2 * lcsLength(A, B)) / total;
     if (score > bestScore || (score === bestScore && bestWord !== null && B < bestWord)) {
       bestScore = score;
       bestWord = B;
     }
   }
-  if (!bestWord || bestScore < LCS_MIN_SIMILARITY) return null;
-  return { word: bestWord, similarity: bestScore, initialCost: bestScore >= LCS_HIGH_SIMILARITY ? 1 : 2 };
+  const result =
+    !bestWord || bestScore < LCS_MIN_SIMILARITY
+      ? null
+      : { word: bestWord, similarity: bestScore, initialCost: bestScore >= LCS_HIGH_SIMILARITY ? 1 : 2 };
+  typoCache.set(A, result === null ? NO_MATCH : result);
+  return result;
 }
 
 /**
@@ -127,8 +177,11 @@ function findClosestWordByNormalizedLCS(query, graph = defaultGraph) {
 function expandQuerySemantically(q, graph = defaultGraph, limit = TOP_TERMS) {
   const tokens = analyzeQuery(q);
   if (!tokens.length) return { tokens, terms: [] };
+  let typoBudget = MAX_TYPO_TOKENS;
   const traversals = tokens.map((t) => {
     if (graph.has(t.word)) return singleSourceBoundedDijkstra(graph, t.word);
+    if (typoBudget <= 0) return singleSourceBoundedDijkstra(graph, t.word);
+    typoBudget--;
     const match = findClosestWordByNormalizedLCS(t.word, graph);
     if (!match) return singleSourceBoundedDijkstra(graph, t.word);
     const raw = singleSourceBoundedDijkstra(graph, match.word);
@@ -157,6 +210,9 @@ module.exports = {
   analyzeQuery,
   singleSourceBoundedDijkstra,
   findClosestWordByNormalizedLCS,
+  charMask,
+  popcount,
+  MAX_TYPO_TOKENS,
   expandQuerySemantically,
   boostFor,
   MAX_COST,

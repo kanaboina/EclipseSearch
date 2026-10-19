@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 const { publicVisibilityFilter } = require('../utils/visibilityFilter');
-const { expandQuerySemantically } = require('./semanticDijkstra');
+const { neighborIndex } = require('./neighborIndex');
 const { normalizeToken } = require('./textNlp');
 
 const PRIMARY = { title: 10, tags: 8, categoryName: 7 };
@@ -17,7 +17,7 @@ function toObjectIds(ids) {
  * - minimumShouldMatch:1 applies to primary fields only (via `must` wrapper).
  */
 function buildAtlasPipeline({ q, deviceType, limit = 50, excludeIds = [], now = new Date(), expansion } = {}) {
-  const { terms } = expansion || expandQuerySemantically(q);
+  const { terms } = expansion || neighborIndex.expand(q);
   const rawTokens = String(q || '').toLowerCase().split(/\s+/).map(normalizeToken).filter(Boolean);
 
   const primary = [];
