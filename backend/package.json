@@ -1,0 +1,16 @@
+{
+  "name": "eclipse-fantasy-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deterministic semantic search modules for Eclipse Fantasy (standalone drop-in)",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "backfill:semantic": "node scripts/backfill-semantic-graph.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "compromise": "^14.14.0",
+    "mongoose": "^8.24.5"
+  }
+}
