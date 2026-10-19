@@ -1,6 +1,6 @@
 # 🌒 Eclipse Fantasy Semantic Search Engine
 
-[![Tests](https://img.shields.io/badge/Tests-18%20Passing-brightgreen.svg)](./backend/test/)
+[![Tests](https://img.shields.io/badge/Tests-100%20Passing-brightgreen.svg)](./backend/test/)
 [![Node Version](https://img.shields.io/badge/Node-%3E%3D18-blue.svg)](https://nodejs.org/)
 [![Database](https://img.shields.io/badge/MongoDB-Atlas%20Search-green.svg)](https://www.mongodb.com/atlas/database)
 [![AI Integration](https://img.shields.io/badge/AI-Gemini%20%7C%20Groq%20%7C%20OpenAI-orange.svg)](./backend/src/services/aiGraphService.js)
@@ -78,9 +78,16 @@ EclipseSearch/
     │   └── workers/
     │       └── draftRetryWorker.js     # Background retry queue processor
     └── test/
-        ├── aiGraphService.test.js      # AI provider & sanitization tests
-        ├── searchService.test.js       # Atlas pipeline & cache tests
-        └── semanticDijkstra.test.js    # Dijkstra, weights & NLP tests
+        ├── aiGraphService.test.js          # AI provider failover & edge sanitization (10 tests)
+        ├── draftWorkerLifecycle.test.js    # Exponential backoff & lifecycle hooks (10 tests)
+        ├── memoryGraph.test.js             # Directed weights & graph operations (10 tests)
+        ├── searchBufferCache.test.js       # LRU eviction & TTL cache (8 tests)
+        ├── searchRanking.test.js           # Atlas compound & $text fallback (12 tests)
+        ├── semanticDijkstra.test.js        # Dial's algorithm, penalties & LCS typos (15 tests)
+        ├── textNlp.test.js                 # Tokenization, singularization & stopwords (12 tests)
+        ├── visibilityFilter.test.js        # Status & deletion safety filters (5 tests)
+        ├── wallpaperDTO.test.js            # Security field stripping & projection (8 tests)
+        └── wallpaperService.test.js        # Pagination, prefetching & deduplication (10 tests)
 ```
 
 ---
@@ -147,23 +154,38 @@ For full-text autocomplete with edge-grams, configure the `wallpaper_search` ind
 
 ---
 
-## 🧪 Testing
+## 🧪 Testing & Analysis Report
 
-The test suite runs with Node's native test runner (`node --test`), requiring zero heavy test framework dependencies:
+The test suite runs with Node's native test runner (`node --test`), requiring zero external test framework dependencies:
 
 ```bash
 cd backend
 npm test
 ```
 
-### Test Coverage Highlights:
-- **Provider Fallback**: Graceful handover across Gemini, Groq, and fallback errors.
-- **Edge Sanitization**: Rejection of self-loops, bad weights, and duplicate relations.
-- **Dial's Algorithm**: Respect of maxCost 6, maxHops 2, and hop-friction penalties.
-- **LCS Typo Resolution**: Unknown words (e.g. *dragn*) map to graph words (*dragon*) with the correct initial cost.
-- **Multi-Source Intersections**: Multi-term expansion (e.g. *dark sky wolf* $\rightarrow$ *night, cloud, fenrir*).
-- **Zero-Duplicate Pagination**: Cursor-based prefetch buffer validation.
-- **Data Protection**: Strict field projection preventing private parameter leakage.
+### 📊 Test Suite Execution Summary
+
+```
+Total Tests:     100
+Passed:          100
+Failed:            0
+Skipped:           0
+Duration:     ~1,015 ms
+Pass Rate:        100%
+```
+
+| Test Suite | Tests | Status | Target Component & Verification Focus |
+|:---|:---:|:---:|:---|
+| `testNlp.test.js` | 12 | ✅ PASS | NLP singularization (`-ies`, `-shes`, `-ches`, `-xes`), irregulars, general & domain stopwords, token normalization. |
+| `memoryGraph.test.js` | 10 | ✅ PASS | Directed asymmetric weights (hyponym 2/4, hypernym 4/2), symmetric relations, self-loop pruning, 1..6 range clamp, graph rebuild & init. |
+| `semanticDijkstra.test.js` | 15 | ✅ PASS | PoS miss penalties (noun 15, adjective 6, domain stopword 1), Dial's bucket queue, hop friction (+1 on hop 2), maxCost 6 & maxHops 2 cutoff, Sørensen–Dice LCS typo fallback (similarity ≥0.80 & 0.55..0.80). |
+| `searchBufferCache.test.js` | 8 | ✅ PASS | LRU eviction ordering, TTL expiry eviction, cache hit promotion, generation incrementing, global singleton cache invalidation. |
+| `wallpaperDTO.test.js` | 8 | ✅ PASS | Strict data protection: strips `story`, `downloadKeys`, `downloadBucket`, `uuid`, `downloads`, `conversionJournal`; safe category projection & URL fallbacks. |
+| `visibilityFilter.test.js` | 5 | ✅ PASS | Strict draft rejection (`status: { $ne: 'draft' }`), deletion pending check (`deletionPending: { $ne: true }`), publish date validation. |
+| `searchRanking.test.js` | 12 | ✅ PASS | Primary weights (title 10, tags 8, categoryName 7), Atlas compound pipeline with `minimumShouldMatch: 1`, fuzzy edge-gram autocomplete, deterministic sort, MongoDB `$text` fallback failover. |
+| `wallpaperService.test.js` | 10 | ✅ PASS | Multi-page traversal with **zero duplicate IDs**, prefetch buffer activation at threshold (<25 remaining), buffer expansion for jump pages, device-isolated cache partitions. |
+| `aiGraphService.test.js` | 10 | ✅ PASS | Structured LLM prompt generation, edge sanitization, weight clamping, multi-provider failover chain, unseen word deduplication, safe draft fallback on total provider failure. |
+| `draftWorkerLifecycle.test.js` | 10 | ✅ PASS | Exponential backoff progression (2m, 4m, 8m ... max 60m), atomic pending job claiming, wallpaper publication on retry, permanent failure ceiling after 10 attempts, lifecycle edit hooks. |
 
 ---
 

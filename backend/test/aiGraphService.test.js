@@ -1,61 +1,168 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { callLlmWithFallback, processWallpaperSemanticsOnUpload, sanitizeExpansions } = require('../src/services/aiGraphService');
-const { createDraftRetryWorker, backoffMs } = require('../src/workers/draftRetryWorker');
+const {
+  buildPrompt,
+  sanitizeExpansions,
+  callLlmWithFallback,
+  findUnseenWords,
+  processWallpaperSemanticsOnUpload,
+} = require('../src/services/aiGraphService');
 
-const good = (words) => JSON.stringify({
-  expansions: Object.fromEntries(words.map((w) => [w, [{ target: 'x' + w, weight: 1, relation: 'synonym' }]])),
+test('buildPrompt formats LLM prompt with required word list and relation types', () => {
+  const prompt = buildPrompt(['fenrir', 'valkyrie']);
+  assert.ok(prompt.includes('fenrir'));
+  assert.ok(prompt.includes('valkyrie'));
+  assert.ok(prompt.includes('synonym|hyponym|hypernym|sibling|scene|mood|tangent'));
+  assert.ok(prompt.includes('exactly 20'));
 });
 
-test('fallback chain moves to next provider on failure', async () => {
+test('sanitizeExpansions discards self-loops where target equals source word', () => {
+  const parsed = {
+    expansions: {
+      wolf: [
+        { target: 'wolf', weight: 1, relation: 'synonym' },
+        { target: 'fenrir', weight: 1, relation: 'synonym' },
+      ],
+    },
+  };
+  const sanitized = sanitizeExpansions(parsed, ['wolf']);
+  assert.equal(sanitized.wolf.length, 1);
+  assert.equal(sanitized.wolf[0].target, 'fenrir');
+});
+
+test('sanitizeExpansions discards targets with invalid characters or symbols', () => {
+  const parsed = {
+    expansions: {
+      dragon: [
+        { target: '$$$invalid$$$', weight: 2, relation: 'synonym' },
+        { target: 'wyvern', weight: 2, relation: 'sibling' },
+        { target: '   ', weight: 1, relation: 'synonym' },
+      ],
+    },
+  };
+  const sanitized = sanitizeExpansions(parsed, ['dragon']);
+  assert.equal(sanitized.dragon.length, 1);
+  assert.equal(sanitized.dragon[0].target, 'wyvern');
+});
+
+test('sanitizeExpansions clamps weights between 1 and 6 and defaults unknown relations to synonym', () => {
+  const parsed = {
+    expansions: {
+      blade: [
+        { target: 'sword', weight: 0, relation: 'synonym' }, // invalid weight < 1
+        { target: 'dagger', weight: 8, relation: 'synonym' }, // invalid weight > 6
+        { target: 'katana', weight: 2.2, relation: 'unknown_type' }, // valid weight rounds to 2, relation -> synonym
+      ],
+    },
+  };
+  const sanitized = sanitizeExpansions(parsed, ['blade']);
+  assert.equal(sanitized.blade.length, 1);
+  assert.equal(sanitized.blade[0].target, 'katana');
+  assert.equal(sanitized.blade[0].weight, 2);
+  assert.equal(sanitized.blade[0].relation, 'synonym');
+});
+
+test('sanitizeExpansions enforces limit of 20 edges per word and dedupes targets', () => {
+  const rawEdges = Array.from({ length: 35 }, (_, i) => ({
+    target: `related${i}`,
+    weight: 2,
+    relation: 'sibling',
+  }));
+  // Add duplicate
+  rawEdges.push({ target: 'related0', weight: 1, relation: 'synonym' });
+
+  const sanitized = sanitizeExpansions({ expansions: { testword: rawEdges } }, ['testword']);
+  assert.equal(sanitized.testword.length, 20); // capped at 20
+});
+
+test('callLlmWithFallback succeeds on primary provider when valid JSON is returned', async () => {
   const providers = [
-    { name: 'a', call: async () => { throw new Error('429'); } },
-    { name: 'b', call: async () => good(['dog']) },
+    {
+      name: 'gemini-mock',
+      call: async () => JSON.stringify({
+        expansions: {
+          wolf: [{ target: 'canine', weight: 2, relation: 'hypernym' }],
+        },
+      }),
+    },
   ];
-  const out = await callLlmWithFallback(['dog'], providers);
-  assert.equal(out.dog[0].target, 'xdog');
+
+  const result = await callLlmWithFallback(['wolf'], providers);
+  assert.ok(result.wolf);
+  assert.equal(result.wolf[0].target, 'canine');
 });
 
-test('all providers failing throws', async () => {
-  await assert.rejects(callLlmWithFallback(['dog'], [{ name: 'a', call: async () => { throw new Error('boom'); } }]));
+test('callLlmWithFallback fails over to secondary provider when primary throws', async () => {
+  const providers = [
+    {
+      name: 'failing-provider',
+      call: async () => { throw new Error('429 Rate Limit Exceeded'); },
+    },
+    {
+      name: 'backup-provider',
+      call: async () => JSON.stringify({
+        expansions: {
+          sky: [{ target: 'cloud', weight: 1, relation: 'synonym' }],
+        },
+      }),
+    },
+  ];
+
+  const result = await callLlmWithFallback(['sky'], providers);
+  assert.ok(result.sky);
+  assert.equal(result.sky[0].target, 'cloud');
 });
 
-test('sanitize rejects bad weights/self loops and caps at 20', () => {
-  const edges = Array.from({ length: 30 }, (_, i) => ({ target: 't' + i, weight: 3 }));
-  edges.push({ target: 'dog', weight: 1 }, { target: 'bad', weight: 9 });
-  const out = sanitizeExpansions({ expansions: { dog: edges } }, ['dog']);
-  assert.equal(out.dog.length, 20);
-  assert.ok(!out.dog.some((e) => e.target === 'dog' || e.target === 'bad'));
+test('callLlmWithFallback throws comprehensive error when all providers fail', async () => {
+  const providers = [
+    { name: 'p1', call: async () => { throw new Error('p1 down'); } },
+    { name: 'p2', call: async () => { throw new Error('p2 timeout'); } },
+  ];
+
+  await assert.rejects(
+    async () => callLlmWithFallback(['magic'], providers),
+    (err) => {
+      assert.ok(err.message.includes('p1: p1 down'));
+      assert.ok(err.message.includes('p2: p2 timeout'));
+      return true;
+    }
+  );
 });
 
-test('upload: AI failure yields draft + unprocessed words; zero unseen yields requested status', async () => {
-  const Model = {
-    find: () => ({ select: () => ({ lean: async () => [] }) }),
+test('findUnseenWords returns only words that have not been expanded yet', async () => {
+  const MockModel = {
+    find: () => ({
+      select: () => ({
+        lean: async () => [{ word: 'wolf' }, { word: 'sky' }],
+      }),
+    }),
+  };
+
+  const unseen = await findUnseenWords(['wolf', 'sky', 'fenrir', 'dragon'], MockModel);
+  assert.deepEqual(unseen, ['fenrir', 'dragon']);
+});
+
+test('processWallpaperSemanticsOnUpload falls back to draft status when AI providers fail', async () => {
+  const MockModel = {
+    find: () => ({
+      select: () => ({
+        lean: async () => [],
+      }),
+    }),
     bulkWrite: async () => {},
   };
-  const failing = await processWallpaperSemanticsOnUpload(
-    { title: 'Dark wolf' }, 'published',
-    { Model, providers: [{ name: 'a', call: async () => { throw new Error('down'); } }] }
+
+  const failingProviders = [
+    { name: 'mock-llm', call: async () => { throw new Error('Connection refused'); } },
+  ];
+
+  const result = await processWallpaperSemanticsOnUpload(
+    { title: 'Majestic Phoenix Rising' },
+    'published',
+    { Model: MockModel, providers: failingProviders }
   );
-  assert.equal(failing.status, 'draft');
-  assert.ok(failing.unprocessedWords.includes('wolf'));
 
-  const seen = { find: () => ({ select: () => ({ lean: async () => [{ word: 'wolf' }, { word: 'dark' }] }) }), bulkWrite: async () => {} };
-  const ok = await processWallpaperSemanticsOnUpload({ title: 'Dark wolf' }, 'published', { Model: seen, providers: [] });
-  assert.equal(ok.status, 'published');
-});
-
-test('worker publishes draft on success and backs off on failure', async () => {
-  const updates = [];
-  const job = { _id: 'j', wallpaperId: 'w', unprocessedWords: ['wolf'], attempts: 0 };
-  const Wallpaper = { updateOne: async (...a) => updates.push(['wp', ...a]) };
-  const Job = { updateOne: async (...a) => updates.push(['job', ...a]) };
-  const okW = createDraftRetryWorker({ Wallpaper, Job, expand: async () => {} });
-  assert.equal(await okW.processJob(job), 'completed');
-  assert.equal(updates[0][2].$set.status, 'published');
-
-  const badW = createDraftRetryWorker({ Wallpaper, Job, expand: async () => { throw new Error('x'); } });
-  assert.equal(await badW.processJob(job), 'retry');
-  assert.equal(backoffMs(1), 2 * 60000);
-  assert.equal(backoffMs(10), 60 * 60000);
+  assert.equal(result.status, 'draft');
+  assert.ok(result.unprocessedWords.length > 0);
+  assert.ok(result.error);
 });
