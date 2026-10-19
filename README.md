@@ -39,6 +39,7 @@ flowchart TD
 
 - **Graph-Powered Query Expansion**: Evaluates relationships across synonyms, hyponyms, hypernyms, siblings, moods, aesthetics, and scene descriptors.
 - **Dial's Bounded Dijkstra (0..6 cost, max 2 hops)**: Deterministic, integer-bucket graph search with hop friction to prevent generic semantic drift.
+- **Normalized LCS Typo Fallback**: Query words missing from the graph (typos, unseen words) are matched to the closest graph word using the Sørensen–Dice LCS score `2·LCS(A,B) / (|A|+|B|)`. DP uses pre-allocated `Uint8Array(64)` rows (no per-candidate heap allocation) with O(1) branch-and-bound pruning. A match with similarity ≥ 0.80 starts Dijkstra at cost 1, one with similarity 0.55–0.80 starts at cost 2, and anything lower is ignored.
 - **Resilient AI Ingestion**: Multi-LLM provider fallback chain (`Gemini 2.5 Flash` → `Groq Llama-3.3-70b` → `OpenAI`) for building graph edges when new terms are introduced.
 - **Zero-Downtime Draft Protection**: If AI expansion is temporarily unavailable upon wallpaper upload, wallpapers are cleanly staged in draft state with an asynchronous exponential-backoff retry worker.
 - **Strict Public Visibility & DTO Projections**: Enforces status, deletion checks, and publish dates at the query level; sanitizes internal metadata from card payloads.
@@ -159,6 +160,7 @@ npm test
 - **Provider Fallback**: Graceful handover across Gemini, Groq, and fallback errors.
 - **Edge Sanitization**: Rejection of self-loops, bad weights, and duplicate relations.
 - **Dial's Algorithm**: Respect of maxCost 6, maxHops 2, and hop-friction penalties.
+- **LCS Typo Resolution**: Unknown words (e.g. *dragn*) map to graph words (*dragon*) with the correct initial cost.
 - **Multi-Source Intersections**: Multi-term expansion (e.g. *dark sky wolf* $\rightarrow$ *night, cloud, fenrir*).
 - **Zero-Duplicate Pagination**: Cursor-based prefetch buffer validation.
 - **Data Protection**: Strict field projection preventing private parameter leakage.
