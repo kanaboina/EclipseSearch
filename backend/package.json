@@ -6,6 +6,8 @@
   "main": "src/index.js",
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
+    "test:metrics": "node scripts/benchmark-10k.js",
+    "benchmark": "node scripts/benchmark-10k.js",
     "backfill:semantic": "node scripts/backfill-semantic-graph.js"
   },
   "engines": { "node": ">=18" },
