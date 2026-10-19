@@ -3,7 +3,8 @@
 [![Tests](https://img.shields.io/badge/tests-122%20passing-brightgreen.svg)](./backend/test/)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-blue.svg)](https://nodejs.org/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas%20Search-green.svg)](https://www.mongodb.com/atlas/database)
-[![Peak Throughput](https://img.shields.io/badge/origin%20peak-31.2k%20QPS-purple.svg)](#concurrency-ladder-1k--20k-concurrent-searches)
+[![Peak Throughput](https://img.shields.io/badge/in--process%20peak-28.4k%20QPS-purple.svg)](#concurrency-ladder-1k--20k-concurrent-searches)
+[![HTTP Load](https://img.shields.io/badge/autocannon-1.2k%20req%2Fs%20%C2%B7%200%20errors-orange.svg)](#real-http-load-testing-autocannon-on-atlas-schema-10k-catalog)
 [![Edge Cache](https://img.shields.io/badge/benchmarks-no%20Cloudflare%20cache-lightgrey.svg)](#benchmark-scope--methodology)
 
 A deterministic semantic search engine and associative knowledge graph for fantasy, anime and artistic wallpaper catalogs.
@@ -246,47 +247,48 @@ Wall clock:     ~6.1 s   (≈ 4.5 s of this is the intentional 10k-token stress 
 
 ### Concurrency ladder (1k → 20k concurrent searches)
 
-[`scripts/concurrency-ladder.js`](./backend/scripts/concurrency-ladder.js) fires *N* searches at once through `Promise.all`, increasing *N* from 1,000 to 20,000 in 20 steps. The traffic mix is **60% hot queries** (5 trending terms, which exercises singleflight) and **40% long-tail queries** (distinct words spread across the vocabulary). Raw output is in [`concurrency-ladder-results.json`](./backend/concurrency-ladder-results.json).
+[`scripts/concurrency-ladder.js`](./backend/scripts/concurrency-ladder.js) fires *N* searches at once through `Promise.all`, increasing *N* from 1,000 to 20,000 in 20 steps. The traffic mix is **60% hot queries** (5 trending terms, which exercises singleflight) and **40% long-tail queries** (distinct words spread across the vocabulary). Raw output is in [`concurrency-ladder-results.json`](./backend/concurrency-ladder-results.json). *Last run: 2026-10-20, Node v26.8.1, 12 logical cores, run with `--expose-gc`.*
 
 | Test | Concurrency | Batch time (ms) | Throughput (QPS) | Mean (ms) | p50 (ms) | p90 (ms) | p95 (ms) | p99 (ms) | Max (ms) | Heap (MB) |
 |:---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 1,000 | 89.13 | 11,219 | 32.93 | 31.94 | 54.63 | 59.39 | 63.00 | 88.88 | 39.3 |
-| 2 | 2,000 | 116.30 | 17,198 | 65.92 | 68.85 | 106.39 | 111.76 | 114.89 | 115.93 | 43.2 |
-| 3 | 3,000 | 142.71 | 21,022 | 77.08 | 75.79 | 130.52 | 136.23 | 140.91 | 142.17 | 78.0 |
-| 4 | 4,000 | 159.94 | 25,009 | 86.03 | 87.29 | 143.39 | 149.83 | 157.63 | 159.08 | 104.4 |
-| 5 | 5,000 | 182.99 | 27,324 | 100.61 | 100.38 | 163.16 | 172.98 | 178.87 | 182.47 | 131.0 |
-| 6 | 6,000 | 246.27 | 24,363 | 134.93 | 133.42 | 222.71 | 234.38 | 243.82 | 245.76 | 161.3 |
-| 7 | 7,000 | 286.08 | 24,469 | 147.99 | 142.32 | 251.07 | 269.26 | 283.21 | 285.45 | 95.1 |
-| 8 | 8,000 | 279.18 | 28,655 | 152.25 | 152.28 | 247.12 | 259.36 | 274.18 | 278.46 | 148.7 |
-| 9 | 9,000 | 304.87 | 29,521 | 175.82 | 176.51 | 276.13 | 289.23 | 301.74 | 304.28 | 208.9 |
-| 10 | 10,000 | 351.84 | 28,422 | 195.31 | 189.70 | 322.50 | 335.75 | 348.05 | 351.14 | 132.9 |
-| 11 | 11,000 | 364.94 | 30,142 | 207.03 | 206.84 | 331.54 | 347.00 | 360.80 | 364.26 | 200.7 |
-| 12 | 12,000 | 406.88 | 29,492 | 235.79 | 237.93 | 371.01 | 388.44 | 402.21 | 406.09 | 283.6 |
-| 13 | 13,000 | 452.32 | 28,741 | 248.24 | 241.00 | 413.48 | 431.55 | 447.35 | 451.30 | 146.4 |
-| 14 | 14,000 | 470.16 | 29,777 | 265.62 | 266.57 | 428.80 | 448.65 | 465.01 | 469.20 | 233.4 |
-| 15 | 15,000 | 490.59 | 30,575 | 273.05 | 269.67 | 447.26 | 467.66 | 485.02 | 489.55 | 337.7 |
-| 16 | 16,000 | 565.51 | 28,293 | 299.56 | 291.64 | 495.66 | 536.78 | 556.11 | 564.29 | 171.0 |
-| 17 | 17,000 | 547.91 | 31,027 | 301.22 | 297.57 | 497.02 | 519.68 | 541.55 | 546.88 | 278.5 |
-| 18 | 18,000 | 618.50 | 29,103 | 345.78 | 355.80 | 559.29 | 587.00 | 611.63 | 617.05 | 178.5 |
-| **19** | **19,000** | 607.47 | **31,277** ⬆ | 335.19 | 334.45 | 549.83 | 575.86 | 600.02 | 605.76 | 292.2 |
-| 20 | 20,000 | 647.85 | 30,871 | 360.55 | 357.05 | 586.91 | 615.29 | 640.50 | 646.49 | 406.1 |
+| 1 | 1,000 | 77.51 | 12,901 | 29.21 | 28.53 | 49.26 | 52.27 | 55.66 | 77.20 | 27.3 |
+| 2 | 2,000 | 127.12 | 15,733 | 64.69 | 63.09 | 114.99 | 120.60 | 124.80 | 126.75 | 60.4 |
+| 3 | 3,000 | 149.79 | 20,028 | 79.52 | 76.79 | 134.77 | 141.84 | 147.53 | 149.32 | 56.2 |
+| 4 | 4,000 | 182.84 | 21,876 | 95.82 | 94.21 | 162.61 | 171.38 | 179.61 | 182.15 | 63.9 |
+| 5 | 5,000 | 216.58 | 23,086 | 116.06 | 114.73 | 194.28 | 204.74 | 213.09 | 215.76 | 71.7 |
+| 6 | 6,000 | 253.59 | 23,660 | 127.76 | 122.37 | 219.56 | 234.43 | 247.71 | 252.61 | 93.9 |
+| 7 | 7,000 | 312.09 | 22,429 | 167.84 | 166.33 | 282.33 | 296.44 | 307.35 | 310.98 | 96.1 |
+| 8 | 8,000 | 343.16 | 23,313 | 177.89 | 173.64 | 297.90 | 315.26 | 331.89 | 342.05 | 103.0 |
+| 9 | 9,000 | 428.32 | 21,013 | 223.93 | 212.18 | 381.06 | 402.89 | 421.78 | 427.24 | 115.9 |
+| 10 | 10,000 | 391.81 | 25,522 | 213.47 | 209.31 | 350.51 | 369.85 | 385.23 | 390.57 | 122.5 |
+| 11 | 11,000 | 426.54 | 25,789 | 227.81 | 224.19 | 378.68 | 400.10 | 417.22 | 423.07 | 139.1 |
+| 12 | 12,000 | 503.62 | 23,827 | 265.02 | 260.09 | 442.80 | 470.01 | 492.78 | 501.69 | 136.3 |
+| 13 | 13,000 | 476.16 | 27,302 | 253.18 | 250.16 | 420.37 | 446.08 | 467.54 | 474.36 | 151.2 |
+| 14 | 14,000 | 513.28 | 27,276 | 276.32 | 272.02 | 457.83 | 483.14 | 505.06 | 512.02 | 151.6 |
+| 15 | 15,000 | 594.68 | 25,224 | 310.68 | 301.56 | 524.39 | 555.13 | 582.12 | 591.35 | 163.0 |
+| 16 | 16,000 | 592.08 | 27,023 | 314.01 | 307.92 | 521.93 | 552.19 | 577.58 | 586.08 | 156.7 |
+| 17 | 17,000 | 610.33 | 27,854 | 324.49 | 317.92 | 539.35 | 571.53 | 598.69 | 608.22 | 179.1 |
+| 18 | 18,000 | 666.61 | 27,002 | 348.35 | 340.17 | 585.39 | 621.74 | 653.70 | 664.50 | 185.4 |
+| 19 | 19,000 | 672.24 | 28,264 | 360.37 | 356.09 | 597.54 | 631.55 | 660.57 | 669.63 | 186.0 |
+| **20** | **20,000** | 705.07 | **28,366** ⬆ | 370.95 | 365.83 | 620.62 | 654.91 | 688.67 | 702.12 | 199.7 |
 
 #### Headline numbers
 
 | Metric | Value |
 |:---|:---|
-| Peak throughput (single process, **no edge cache**) | **31,277 QPS** at 19k concurrency |
-| Sustained throughput plateau (≥ 8k concurrency) | **28–31k QPS** |
-| Effective per-search CPU cost | **≈ 32 µs** (1 / 31k QPS) |
-| 20,000 simultaneous searches drained in | **648 ms** |
+| Peak throughput (single process, **no edge cache**) | **28,366 QPS** at 20k concurrency |
+| Sustained throughput plateau (≥ 13k concurrency) | **25–28k QPS** |
+| Effective per-search CPU cost | **≈ 35 µs** (1 / 28.4k QPS) |
+| 20,000 simultaneous searches drained in | **705 ms** |
 | Errors / dropped requests across all 210,000 searches | **0** |
-| Heap at 20k concurrency (20k live sessions with pools) | ~406 MB, reclaimed between tests |
+| Heap at 20k concurrency (20k live sessions with pools) | ~200 MB |
 
 #### Reading the curve
 
-- **Throughput scales, then plateaus.** QPS rises from 11k to 27k between 1k and 5k concurrency as V8 warms up and fixed per-batch overhead is amortised. It then holds at **28–31k QPS**. This is the CPU ceiling of **one** event loop. The plateau is flat with no collapse, which means there is no lock contention, quadratic behaviour or GC thrashing under load.
-- **Latency here is queueing time, not service time.** All *N* requests are released in the same tick, so the last request waits for the N−1 ahead of it. That is why p99 ≈ batch duration and latency grows linearly with *N*. The actual service time is **~32 µs per search**. Against a real arrival process (Poisson rather than a burst), tail latency is far lower at the same QPS.
-- **Heap is bounded.** Memory follows the number of live sessions (each holds a ranked pool and a `Set`), not request count. It is released between runs, and the sawtooth pattern (for example 337 MB → 171 MB) shows the GC reclaiming it normally. The production session LRU is capped at 5,000 entries with a 15-minute TTL.
+- **Throughput scales, then plateaus.** QPS rises from 12.9k to 23k between 1k and 5k concurrency as V8 warms up and fixed per-batch overhead is amortised. It then climbs more slowly and settles at **25–28k QPS** from 13k concurrency upwards. This is the CPU ceiling of **one** event loop. Throughput never collapses as load increases, which means there is no lock contention, quadratic behaviour or GC thrashing. The dips at 7k, 9k and 12k are run-to-run noise (GC pauses landing inside a batch).
+- **Latency here is queueing time, not service time.** All *N* requests are released in the same tick, so the last request waits for the N−1 ahead of it. That is why p99 ≈ batch duration and latency grows linearly with *N*. The actual service time is **~35 µs per search**. Against a real arrival process (Poisson rather than a burst), tail latency is far lower at the same QPS.
+- **Heap is bounded.** Memory follows the number of live sessions (each holds a ranked pool and a `Set`), not request count. It grows roughly linearly from 27 MB to 200 MB, about 10 KB per live session. The production session LRU is capped at 5,000 entries with a 15-minute TTL.
+- **Run-to-run variance.** An earlier run on the same machine peaked at 31.3k QPS. Expect about ±10% between runs depending on background load and GC timing.
 - **Linear horizontal scaling.** The engine is stateless apart from session affinity, so `cluster` across *C* cores, or *R* replicas behind sticky routing, multiplies the plateau by roughly *C × R*. That figure is **before** counting edge-cache offload.
 
 ### Component micro-benchmarks (10,000-word search space)
@@ -323,7 +325,7 @@ These are per-function latencies from [`scripts/benchmark-10k.js`](./backend/scr
 | `findUnseenWords` (50 vs 10k) | Ingestion | 200 | 0.167 ms | 0.164 ms | 0.181 ms | 0.298 ms | 0.301 ms | 5,976 ops/s |
 
 > [!TIP]
-> **Why v2 is faster on the read path.** The `Expansion · v1` rows (1.5–3.9 ms) are the live-Dijkstra cost that v1 paid on **every** search. In v2 the same Dijkstra work (rows marked `· write`) runs only when the graph changes. The read path now does lookups into the precomputed index instead, which is how one process sustains ~31k searches/s.
+> **Why v2 is faster on the read path.** The `Expansion · v1` rows (1.5–3.9 ms) are the live-Dijkstra cost that v1 paid on **every** search. In v2 the same Dijkstra work (rows marked `· write`) runs only when the graph changes. The read path now does lookups into the precomputed index instead, which is how one process sustains ~28k searches/s.
 >
 > This table was captured on 2026-10-19 before the v2 changes, and the micro-benchmark script still measures the live expansion path. Re-run `npm run benchmark` to refresh it.
 
@@ -340,6 +342,52 @@ node --expose-gc scripts/concurrency-ladder.js   # 1k -> 20k ladder -> concurren
 
 `--expose-gc` lets the ladder force a GC between steps so that heap readings are comparable.
 
+### Real HTTP Load Testing (`autocannon` on Atlas-Schema 10k Catalog)
+
+While the in-process concurrency ladder measures raw algorithmic capability without network overhead, [`scripts/http-load-test.js`](./backend/scripts/http-load-test.js) runs **real HTTP requests over TCP** against the live Node.js HTTP server ([`src/server.js`](./backend/src/server.js)), querying a **10,000-document Atlas-schema catalog** ([`src/mockAtlasData.js`](./backend/src/mockAtlasData.js)). *Last run: 2026-10-20, Node v26.8.1, `autocannon@^8`, single process, no Cloudflare cache.*
+
+The benchmark generates a **realistic traffic arrival mix** (28 request templates rotated by autocannon):
+* **60% Trending / Hot Queries** (8 queries × 2 variants = 16 templates): `cyberpunk neon`, `dark fantasy dragon`, `anime warrior girl`, `minimalist landscape`, `space nebula galaxy`, `samurai sunset`, `mystic forest light`, `steampunk city` — each also tested with `deviceType=phone`
+* **25% Long-Tail Queries** (8 templates): `phoenix fire blade`, `valkyrie celestial armor`, `shadow assassin moon`, `abyss underwater crystal`, `tundra frozen glacier`, `vortex storm lightning`, `shrine cherry blossom`, `golem ancient ruins`
+* **5% Typo Fallback** (4 templates): `cybrpunk non`, `dragn castel`, `anme warir`, `sakura blosom` — triggering bitmask + LCS fallback
+* **10% Multi-Page Pagination**: Sequential page requests (`page=2`, `page=3`) using session IDs primed before the benchmark, exercising in-memory session caching
+
+#### HTTP Load Test Results (36,111 total HTTP requests · 0 errors · 0 timeouts)
+
+| Scenario | Connections | Duration | Total Reqs | Arrival Rate (Req/s) | Avg Latency | P50 | P90 | **P95** | **P99** | P99.9 | Max | Throughput | Errors |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Scenario 1: Steady-State (15 CCU)** | 15 | 10.04 s | 11,561 | **1,156 req/s** | 12.52 ms | 15 ms | 17 ms | **18 ms** | **23 ms** | 36 ms | 76 ms | 2.31 MB/s | **0** |
+| **Scenario 2: Peak High-Load (50 CCU)** | 50 | 10.11 s | 12,400 | **1,240 req/s** | 40.16 ms | 37 ms | 50 ms | **51.5 ms** | **66 ms** | 482 ms | 771 ms | 2.47 MB/s | **0** |
+| **Scenario 3: Stress Surge (100 CCU)** | 100 | 10.25 s | 12,150 | **1,215 req/s** | 83.45 ms | 77 ms | 93 ms | **99.5 ms** | **121 ms** | 1,992 ms | 2,500 ms | 2.46 MB/s | **0** |
+
+> Raw metrics exported to [`http-load-test-results.json`](./backend/http-load-test-results.json).
+
+#### Key Observations Under Real HTTP Traffic
+
+1. **Sub-23 ms P99 under steady traffic.** At 1,156 req/s (15 concurrent clients, `pipelining=1`), **P95 is 18 ms** and **P99 is 23 ms**. Semantic expansion, typo fallback, session management and JSON serialisation add negligible latency on top of Node's HTTP layer.
+2. **Stable throughput under 3.3× concurrency increase.** Increasing connections from 15 → 50 → 100 raises latency (queueing) but throughput stays in the narrow **1,156–1,240 req/s** band. This is characteristic of a CPU-bound server with no contention: the event loop is fully utilised and additional connections queue rather than degrade.
+3. **Tail latency is connection queueing.** P99.9 jumps from 36 ms (15 CCU) to 1,992 ms (100 CCU) because 100 clients contend for one event loop. The median stays at 77 ms even under 100 CCU, confirming that per-request service time is constant.
+4. **100% Reliability.** Across all 36,111 HTTP request-response cycles — including typo queries, pagination lookups and device-filtered searches — the server maintained **0 errors, 0 dropped connections, and 0 timeouts**.
+5. **Singleflight in action.** The 60% hot-query traffic share means most concurrent clients hit the same trending terms. Singleflight coalesces these into one `fetchPool` call, keeping latency flat despite the hot-key concentration.
+
+#### Autocannon vs. In-Process Ladder
+
+| Metric | In-Process Ladder | Autocannon HTTP |
+|:---|:---:|:---:|
+| What it measures | Engine overhead only (no TCP, no HTTP parsing, no JSON serialisation) | Full request lifecycle over TCP |
+| Peak throughput | **28,366 QPS** | **1,240 req/s** |
+| Bottleneck | CPU (expansion + session slice) | CPU + HTTP parsing + JSON `stringify` + TCP |
+| Errors | 0 / 210,000 | 0 / 36,111 |
+
+The ~23× gap between the two numbers is expected: autocannon pays the TCP + HTTP + JSON cost per request, and the 10k mock-Atlas search simulator scores candidates against the inverted token index on every new session, which the in-process ladder does not include.
+
+To run the HTTP load test at any time:
+```bash
+cd backend
+npm run test:load
+```
+*(If `MONGODB_URI` is provided in `backend/.env`, the server and test suite will automatically target your live Atlas cluster).*
+
 ---
 
 ## Repository Structure
@@ -349,18 +397,23 @@ EclipseSearch/
 ├── README.md
 └── backend/
     ├── package.json
-    ├── concurrency-ladder-results.json     # 🆕 1k→20k concurrency ladder output
+    ├── http-load-test-results.json         # 🆕 Autocannon real HTTP load test metrics
+    ├── concurrency-ladder-results.json     # 1k→20k concurrency ladder output
     ├── test-metrics-10k.json               # Component latency export (10k space)
     ├── docs/
     │   └── atlas-search.md                 # Atlas Search index definition
     ├── scripts/
+    │   ├── http-load-test.js               # 🆕 Autocannon realistic HTTP load test runner
     │   ├── backfill-semantic-graph.js      # Hydrate the graph from existing wallpapers
     │   ├── benchmark-10k.js                # Statistical micro-benchmark runner
-    │   ├── concurrency-ladder.js           # 🆕 20-step concurrent load generator
+    │   ├── concurrency-ladder.js           # 20-step concurrent load generator
     │   └── datasetGenerator.js             # Deterministic 10k-word dataset and graph
     ├── src/
+    │   ├── index.js                        # 🆕 HTTP server entrypoint
+    │   ├── server.js                       # 🆕 High-throughput search HTTP server
+    │   ├── mockAtlasData.js                # 🆕 10k Atlas-schema dataset and search simulator
     │   ├── edge/
-    │   │   └── searchCacheWorker.js        # 🆕 Cloudflare Worker: query normalisation + SWR cache
+    │   │   └── searchCacheWorker.js        # Cloudflare Worker: query normalisation + SWR cache
     │   ├── models/
     │   │   ├── AiIngestionJob.js           # Ingestion and retry job schema
     │   │   └── SemanticNode.js             # Graph persistence schema

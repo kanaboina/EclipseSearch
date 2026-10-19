@@ -5,8 +5,10 @@
   "description": "Deterministic semantic search modules for Eclipse Fantasy (standalone drop-in)",
   "main": "src/index.js",
   "scripts": {
+    "start": "node src/index.js",
     "test": "node --test \"test/*.test.js\"",
     "test:metrics": "node scripts/benchmark-10k.js",
+    "test:load": "node scripts/http-load-test.js",
     "benchmark": "node scripts/benchmark-10k.js",
     "backfill:semantic": "node scripts/backfill-semantic-graph.js"
   },
@@ -17,5 +19,8 @@
     "compromise": "^14.14.0",
     "lru-cache": "^11.5.3",
     "mongoose": "^8.24.5"
+  },
+  "devDependencies": {
+    "autocannon": "^8.0.0"
   }
 }
