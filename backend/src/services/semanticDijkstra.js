@@ -68,6 +68,58 @@ function singleSourceBoundedDijkstra(graph, source, maxCost = MAX_COST, maxHops 
 
 const boostFor = (cost) => Math.round((20 / (1 + cost)) * 100) / 100;
 
+const LCS_MAX_LEN = 63;
+const LCS_MIN_SIMILARITY = 0.55;
+const LCS_HIGH_SIMILARITY = 0.8;
+// Pre-allocated DP rows: no heap allocation per candidate.
+let lcsPrev = new Uint8Array(LCS_MAX_LEN + 1);
+let lcsCurr = new Uint8Array(LCS_MAX_LEN + 1);
+
+/** LCS length of a and b using two reusable Uint8Array rows. Both lengths must be <= 63. */
+function lcsLength(a, b) {
+  const n = a.length;
+  const m = b.length;
+  let prev = lcsPrev;
+  let curr = lcsCurr;
+  prev.fill(0, 0, m + 1);
+  curr.fill(0, 0, m + 1);
+  for (let i = 1; i <= n; i++) {
+    const ca = a.charCodeAt(i - 1);
+    curr[0] = 0;
+    for (let j = 1; j <= m; j++) {
+      if (ca === b.charCodeAt(j - 1)) curr[j] = prev[j - 1] + 1;
+      else curr[j] = prev[j] >= curr[j - 1] ? prev[j] : curr[j - 1];
+    }
+    const t = prev; prev = curr; curr = t;
+  }
+  return prev[m];
+}
+
+/**
+ * Scan graph keys for the best Sørensen–Dice LCS match: 2*LCS/(|A|+|B|).
+ * O(1) branch-and-bound prunes candidates that cannot beat bestScore.
+ * @returns {{word: string, similarity: number, initialCost: number} | null}
+ */
+function findClosestWordByNormalizedLCS(query, graph = defaultGraph) {
+  const A = String(query || '');
+  if (!A || A.length > LCS_MAX_LEN) return null;
+  let bestScore = 0;
+  let bestWord = null;
+  for (const B of graph.keys()) {
+    const lb = B.length;
+    if (lb > LCS_MAX_LEN || lb === 0) continue;
+    const total = A.length + lb;
+    if ((2 * Math.min(A.length, lb)) / total <= bestScore) continue;
+    const score = (2 * lcsLength(A, B)) / total;
+    if (score > bestScore || (score === bestScore && bestWord !== null && B < bestWord)) {
+      bestScore = score;
+      bestWord = B;
+    }
+  }
+  if (!bestWord || bestScore < LCS_MIN_SIMILARITY) return null;
+  return { word: bestWord, similarity: bestScore, initialCost: bestScore >= LCS_HIGH_SIMILARITY ? 1 : 2 };
+}
+
 /**
  * Multi-source intersection scorer. Returns top-25 tightest terms:
  * [{ term, cost, boost }] sorted ascending by cost.
@@ -75,7 +127,15 @@ const boostFor = (cost) => Math.round((20 / (1 + cost)) * 100) / 100;
 function expandQuerySemantically(q, graph = defaultGraph, limit = TOP_TERMS) {
   const tokens = analyzeQuery(q);
   if (!tokens.length) return { tokens, terms: [] };
-  const traversals = tokens.map((t) => singleSourceBoundedDijkstra(graph, t.word));
+  const traversals = tokens.map((t) => {
+    if (graph.has(t.word)) return singleSourceBoundedDijkstra(graph, t.word);
+    const match = findClosestWordByNormalizedLCS(t.word, graph);
+    if (!match) return singleSourceBoundedDijkstra(graph, t.word);
+    const raw = singleSourceBoundedDijkstra(graph, match.word);
+    const dist = new Map();
+    for (const [w, d] of raw) dist.set(w, d + match.initialCost);
+    return dist;
+  });
   const candidates = new Set();
   for (const t of tokens) candidates.add(t.word);
   for (const d of traversals) for (const w of d.keys()) candidates.add(w);
@@ -96,6 +156,7 @@ function expandQuerySemantically(q, graph = defaultGraph, limit = TOP_TERMS) {
 module.exports = {
   analyzeQuery,
   singleSourceBoundedDijkstra,
+  findClosestWordByNormalizedLCS,
   expandQuerySemantically,
   boostFor,
   MAX_COST,

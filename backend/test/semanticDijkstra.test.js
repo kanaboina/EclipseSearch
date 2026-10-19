@@ -65,3 +65,15 @@ test('analyzeQuery assigns penalties', () => {
   assert.equal(t.wallpaper, 1);
   assert.equal(t['4k'], 1);
 });
+
+test('normalized LCS maps typos to graph words with initialCost 1 or 2', () => {
+  const { findClosestWordByNormalizedLCS } = require('../src/services/semanticDijkstra');
+  const g = graph({ dragon: [{ target: 'wyvern', weight: 2, relation: 'sibling' }], castle: [] });
+  const hi = findClosestWordByNormalizedLCS('dragn', g);
+  assert.equal(hi.word, 'dragon');
+  assert.equal(hi.initialCost, 1);
+  assert.equal(findClosestWordByNormalizedLCS('zzzzzz', g), null);
+  const { terms } = expandQuerySemantically('dragn', g);
+  const by = Object.fromEntries(terms.map((t) => [t.term, t.cost]));
+  assert.equal(by.wyvern, 3);
+});
