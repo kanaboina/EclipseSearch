@@ -73,21 +73,53 @@ function createProgressiveSearch({
     return { mode: 'legacy', ranked, cursor: 0, seenIds: new Set(), q, deviceType };
   }
 
-  async function search({ q, sessionId, limit = batchSize, deviceType } = {}) {
+  async function search({ q, sessionId, page, limit = batchSize, deviceType } = {}) {
+    limit = Math.min(48, Math.max(1, parseInt(limit, 10) || batchSize));
+    const explicitPage = page === undefined ? undefined : Math.max(1, parseInt(page, 10) || 1);
     let id = sessionId;
     let session = sessions.get(id);
 
     if (!session) {
+      if (!String(q || '').trim()) {
+        const error = new Error(sessionId ? 'Search session expired; restart with a query' : 'A search query is required');
+        error.statusCode = sessionId ? 410 : 400;
+        throw error;
+      }
       session = idFirstMode
         ? await buildIdFirstSession(q, deviceType)
         : await buildLegacySession(q, deviceType);
       id = randomUUID();
       sessions.set(id, session);
+    } else if ((String(q || '').trim() && searchKey(q) !== searchKey(session.q)) ||
+               (deviceType !== undefined && deviceType !== session.deviceType)) {
+      const error = new Error('Query and deviceType must match the search session');
+      error.statusCode = 400;
+      throw error;
     }
 
-    // Serialize page advances for one session, including asynchronous hydration.
+    // Serialize requests for a session. Explicit page numbers can jump/replay;
+    // omitting page continues the cursor. ID pages always recheck visibility.
     const previous = session.pending || Promise.resolve();
-    const pending = previous.then(() => advance(session, id, limit));
+    const pending = previous.then(async () => {
+      const state = { ...session, seenIds: new Set(session.seenIds) };
+      if (explicitPage !== undefined) {
+        state.cursor = 0;
+        state.seenIds = new Set();
+        state.returnedCount = 0;
+        let skip = (explicitPage - 1) * limit;
+        while (skip > 0 && state.cursor < state.ranked.length) {
+          const skipped = await advance(state, id, Math.min(skip, limit));
+          skip -= skipped.data.length;
+        }
+      }
+      const resultPage = explicitPage ?? Math.floor((state.returnedCount || state.seenIds.size) / limit) + 1;
+      const result = await advance(state, id, limit);
+      // Commit only after the entire request succeeds, including any skipped pages.
+      session.cursor = state.cursor;
+      session.seenIds = state.seenIds;
+      session.returnedCount = state.returnedCount;
+      return { ...result, page: resultPage };
+    });
     session.pending = pending.then(() => {}, () => {});
     return pending;
   }

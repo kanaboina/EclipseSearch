@@ -3,6 +3,9 @@
  * Hot-updatable; no restart needed.
  */
 const memoryGraph = new Map();
+const graphRevisions = new WeakMap();
+const graphRevision = (graph) => graphRevisions.get(graph) || 0;
+function markGraphChanged(graph) { graphRevisions.set(graph, graphRevision(graph) + 1); }
 
 const REVERSE_RELATION = { hyponym: 'hypernym', hypernym: 'hyponym' };
 
@@ -19,7 +22,7 @@ function directedWeights(relation, weight) {
 }
 
 function setMin(graph, from, to, w) {
-  if (from === to || w < 1 || w > 6) return;
+  if (from === to || !Number.isInteger(w) || w < 1 || w > 6) return;
   let m = graph.get(from);
   if (!m) { m = new Map(); graph.set(from, m); }
   const cur = m.get(to);
@@ -27,6 +30,7 @@ function setMin(graph, from, to, w) {
 }
 
 function addEdges(graph, word, edges) {
+  markGraphChanged(graph);
   if (!graph.has(word)) graph.set(word, new Map());
   for (const e of edges || []) {
     if (!e || !e.target) continue;
@@ -38,6 +42,7 @@ function addEdges(graph, word, edges) {
 
 function rebuildGraph(graph, nodes) {
   graph.clear();
+  markGraphChanged(graph);
   for (const n of nodes) addEdges(graph, n.word, n.edges);
   return graph;
 }
@@ -97,6 +102,8 @@ async function initMemoryGraph(SemanticNode = require('../models/SemanticNode'))
 
 module.exports = {
   memoryGraph,
+  graphRevision,
+  markGraphChanged,
   wordDocIds,
   addEdges,
   rebuildGraph,

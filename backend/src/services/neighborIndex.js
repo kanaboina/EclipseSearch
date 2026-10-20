@@ -1,8 +1,8 @@
 const {
-  singleSourceBoundedDijkstra, analyzeQuery, boostFor, findClosestWordByNormalizedLCS,
+  singleSourceBoundedDijkstra, analyzeQuery, mergeTraversals, findClosestWordByNormalizedLCS,
   TOP_TERMS, MAX_HOPS, MAX_TYPO_TOKENS,
 } = require('./semanticDijkstra');
-const { wordDocIds: defaultWordDocIds } = require('./memoryGraph');
+const { wordDocIds: defaultWordDocIds, markGraphChanged } = require('./memoryGraph');
 
 const K = 20;
 
@@ -16,6 +16,7 @@ const K = 20;
  */
 class NeighborIndex {
   constructor(k = K) {
+    if (!Number.isInteger(k) || k < 1 || k > 255) throw new RangeError('k must be an integer from 1 to 255');
     this.k = k;
     this.graph = null;
     this.words = [];
@@ -61,7 +62,9 @@ class NeighborIndex {
     near.sort((a, b) => a[1] - b[1] || (a[0] < b[0] ? -1 : 1));
     const c = Math.min(this.k, near.length);
     for (let i = 0; i < c; i++) {
-      this.neighborNodeIds[base + i] = this._ensure(near[i][0]);
+      // Resolving a new ID may replace the backing arrays. Resolve before writing.
+      const neighborId = this._ensure(near[i][0]);
+      this.neighborNodeIds[base + i] = neighborId;
       this.neighborCosts[base + i] = near[i][1];
     }
     this.neighborCounts[node] = c;
@@ -73,6 +76,7 @@ class NeighborIndex {
    */
   update(graph, changedWords) {
     this.graph = graph;
+    markGraphChanged(graph);
     const affected = new Set();
     let frontier = [];
     for (const w of changedWords) { affected.add(w); frontier.push(w); }
@@ -135,28 +139,14 @@ class NeighborIndex {
     let typoBudget = MAX_TYPO_TOKENS;
     const lists = tokens.map((t) => {
       if (this.idOf.has(t.word) || typoBudget <= 0 || !this.graph) return this.neighbors(t.word);
+      typoBudget--; // Bound expensive attempts, including misses.
       const match = findClosestWordByNormalizedLCS(t.word, this.graph); // LRU-cached string match
       if (!match) return this.neighbors(t.word);
-      typoBudget--; // Only consume budget on successful match
       const out = new Map();
       for (const [w, d] of this.neighbors(match.word)) out.set(w, d + match.initialCost);
       return out;
     });
-    const candidates = new Set(tokens.map((t) => t.word));
-    for (const l of lists) for (const w of l.keys()) candidates.add(w);
-    const terms = [];
-    for (const v of candidates) {
-      // Min-cost: a term only needs to be close to ONE query token.
-      let cost = Infinity;
-      tokens.forEach((t, i) => {
-        const d = lists[i].get(v);
-        const c = d !== undefined ? d : t.penalty;
-        if (c < cost) cost = c;
-      });
-      terms.push({ term: v, cost, boost: boostFor(cost) });
-    }
-    terms.sort((a, b) => a.cost - b.cost || (a.term < b.term ? -1 : 1));
-    return { tokens, terms: terms.slice(0, limit) };
+    return { tokens, terms: mergeTraversals(tokens, lists, limit) };
   }
   /**
    * Resolve a search query directly to ranked document IDs using the in-memory

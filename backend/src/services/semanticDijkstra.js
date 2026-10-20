@@ -1,5 +1,5 @@
 const { LRUCache } = require('lru-cache');
-const { memoryGraph: defaultGraph } = require('./memoryGraph');
+const { memoryGraph: defaultGraph, graphRevision } = require('./memoryGraph');
 const { nlp, STOPWORDS, DOMAIN_STOPWORDS, singularize, normalizeToken, normalizeTokenStrict } = require('./textNlp');
 
 const MAX_COST = 6;
@@ -42,35 +42,29 @@ function analyzeQuery(q) {
 }
 
 /**
- * Dial's algorithm (bucket queue, costs 0..6), bounded by maxCost and maxHops.
- * 2nd+ hop adds +1 friction so two generic hops (2+2) never beat a direct relation.
+ * Hop-bounded shortest paths with a frontier for each exact hop count.
+ * 2nd+ hop adds +1 friction. Keeping hop layers separate preserves a costlier
+ * short route when a cheaper route has already consumed the hop budget.
  * @returns {Map<string, number>} word -> min distance
  */
 function singleSourceBoundedDijkstra(graph, source, maxCost = MAX_COST, maxHops = MAX_HOPS) {
   const dist = new Map([[source, 0]]);
-  const hopsAt = new Map([[source, 0]]);
-  const buckets = Array.from({ length: maxCost + 1 }, () => []);
-  buckets[0].push(source);
-
-  for (let c = 0; c <= maxCost; c++) {
-    for (let i = 0; i < buckets[c].length; i++) {
-      const u = buckets[c][i];
-      if (dist.get(u) !== c) continue; // stale entry
-      const hops = hopsAt.get(u);
-      if (hops >= maxHops) continue;
-      const nbrs = graph.get(u);
-      if (!nbrs) continue;
-      for (const [v, w] of nbrs) {
-        const next = c + w + (hops >= 1 ? 1 : 0);
+  let frontier = new Map([[source, 0]]);
+  for (let hops = 0; hops < maxHops && frontier.size; hops++) {
+    const nextLayer = hops + 1 < maxHops ? new Map() : null;
+    const friction = hops > 0 ? 1 : 0;
+    for (const [u, cost] of frontier) {
+      if (cost + 1 + friction > maxCost) continue;
+      for (const [v, weight] of graph.get(u) || []) {
+        if (!Number.isInteger(weight) || weight < 1 || weight > 6) continue;
+        const next = cost + weight + friction;
         if (next > maxCost) continue;
-        const cur = dist.get(v);
-        if (cur === undefined || next < cur) {
-          dist.set(v, next);
-          hopsAt.set(v, hops + 1);
-          buckets[next].push(v);
-        }
+        const best = dist.get(v);
+        if (best === undefined || next < best) dist.set(v, next);
+        if (nextLayer && (nextLayer.get(v) === undefined || next < nextLayer.get(v))) nextLayer.set(v, next);
       }
     }
+    frontier = nextLayer;
   }
   return dist;
 }
@@ -117,14 +111,15 @@ function popcount(x) {
   return (((x + (x >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
 }
 
-// Per-graph dictionary masks, rebuilt only when the vocabulary size changes.
+// Per-graph dictionary masks, invalidated by vocabulary size or write revision.
 const maskStore = new WeakMap(); // graph -> { size, masks: Map<word, mask>, typoCache: LRUCache }
 function graphTypoState(graph) {
   let st = maskStore.get(graph);
-  if (!st || st.size !== graph.size) {
+  const revision = graphRevision(graph);
+  if (!st || st.size !== graph.size || st.revision !== revision) {
     const masks = new Map();
     for (const w of graph.keys()) masks.set(w, charMask(w));
-    st = { size: graph.size, masks, typoCache: new LRUCache({ max: 5000 }) };
+    st = { size: graph.size, revision, masks, typoCache: new LRUCache({ max: 5000 }) };
     maskStore.set(graph, st);
   }
   return st;
@@ -134,7 +129,7 @@ const NO_MATCH = Symbol('no-match');
 
 /**
  * Scan graph keys for the best Sørensen–Dice LCS match: 2*LCS/(|A|+|B|).
- * Pruning: length bound, then a bitmask AND + popcount pre-check before the O(|A||B|) LCS.
+ * Pruning: length bound, then disjoint alphabet masks before the O(|A||B|) LCS.
  * Results (including misses) are memoised in an LRU typoCache.
  * @returns {{word: string, similarity: number, initialCost: number} | null}
  */
@@ -146,19 +141,18 @@ function findClosestWordByNormalizedLCS(query, graph = defaultGraph) {
   if (cached !== undefined) return cached === NO_MATCH ? null : cached;
 
   const maskA = charMask(A);
-  const popA = popcount(maskA);
+  const lettersOnly = /^[a-z]+$/.test(A);
   let bestScore = 0;
   let bestWord = null;
   for (const B of graph.keys()) {
     const lb = B.length;
     if (lb > LCS_MAX_LEN || lb === 0) continue;
     const total = A.length + lb;
-    if ((2 * Math.min(A.length, lb)) / total <= bestScore) continue;
+    if ((2 * Math.min(A.length, lb)) / total < bestScore) continue;
     const maskB = masks.get(B);
-    if (popA && maskB) {
-      const shared = popcount((maskA & maskB) >>> 0);
-      if (shared < Math.ceil(LCS_MIN_SIMILARITY * Math.min(popA, popcount(maskB)) * 0.9)) continue;
-    }
+    // A presence mask cannot bound the LCS when characters repeat. It only
+    // proves a miss for disjoint alphabets containing exclusively a-z.
+    if (lettersOnly && /^[a-z]+$/.test(B) && !(maskA & maskB)) continue;
     const score = (2 * lcsLength(A, B)) / total;
     if (score > bestScore || (score === bestScore && bestWord !== null && B < bestWord)) {
       bestScore = score;
@@ -171,6 +165,63 @@ function findClosestWordByNormalizedLCS(query, graph = defaultGraph) {
       : { word: bestWord, similarity: bestScore, initialCost: bestScore >= LCS_HIGH_SIMILARITY ? 1 : 2 };
   typoCache.set(A, result === null ? NO_MATCH : result);
   return result;
+}
+
+// Keep only the requested terms while scanning. Most candidates cannot enter
+// the small top-K result, so avoid sorting/allocating/scoring all of them.
+function retainTerm(terms, term, cost, limit) {
+  if (limit <= 0) return;
+  const last = terms[terms.length - 1];
+  if (terms.length >= limit && (cost > last.cost || (cost === last.cost && term >= last.term))) return;
+  let low = 0;
+  let high = terms.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    const row = terms[mid];
+    if (row.cost < cost || (row.cost === cost && row.term < term)) low = mid + 1;
+    else high = mid;
+  }
+  terms.splice(low, 0, { term, cost, boost: boostFor(cost) });
+  if (terms.length > limit) terms.pop();
+}
+
+/**
+ * Merge distances and absent-token penalties without scanning every token for
+ * every candidate. A penalty applies when at least one traversal in its group
+ * lacks the candidate. Counts preserve that rule even for repeated penalties.
+ */
+function mergeTraversals(tokens, traversals, limit = TOP_TERMS) {
+  if (tokens.length <= 4) {
+    const candidates = new Set(tokens.map((t) => t.word));
+    for (const traversal of traversals) for (const word of traversal.keys()) candidates.add(word);
+    const terms = [];
+    for (const term of candidates) {
+      let cost = Infinity;
+      for (let i = 0; i < tokens.length; i++) cost = Math.min(cost, traversals[i].get(term) ?? tokens[i].penalty);
+      retainTerm(terms, term, cost, limit);
+    }
+    return terms;
+  }
+  const costs = new Map(tokens.map((t) => [t.word, Infinity]));
+  const groups = new Map();
+  tokens.forEach((token, i) => {
+    let group = groups.get(token.penalty);
+    if (!group) { group = { total: 0, present: new Map() }; groups.set(token.penalty, group); }
+    group.total++;
+    for (const [word, distance] of traversals[i]) {
+      if (!costs.has(word) || distance < costs.get(word)) costs.set(word, distance);
+      group.present.set(word, (group.present.get(word) || 0) + 1);
+    }
+  });
+  const terms = [];
+  for (const [term, distance] of costs) {
+    let cost = distance;
+    for (const [penalty, group] of groups) {
+      if ((group.present.get(term) || 0) < group.total) cost = Math.min(cost, penalty);
+    }
+    retainTerm(terms, term, cost, limit);
+  }
+  return terms;
 }
 
 /**
@@ -192,29 +243,12 @@ function expandQuerySemantically(q, graph = defaultGraph, limit = TOP_TERMS) {
     for (const [w, d] of raw) dist.set(w, d + match.initialCost);
     return dist;
   });
-  const candidates = new Set();
-  for (const t of tokens) candidates.add(t.word);
-  for (const d of traversals) for (const w of d.keys()) candidates.add(w);
-
-  const terms = [];
-  for (const v of candidates) {
-    // Use min-cost across tokens: a term only needs to be close to ONE query
-    // token to be relevant. This fixes multi-word queries like "dragon knight"
-    // where each token's neighbors are disjoint.
-    let cost = Infinity;
-    tokens.forEach((t, i) => {
-      const d = traversals[i].get(v);
-      const c = d !== undefined ? d : t.penalty;
-      if (c < cost) cost = c;
-    });
-    terms.push({ term: v, cost, boost: boostFor(cost) });
-  }
-  terms.sort((a, b) => a.cost - b.cost || (a.term < b.term ? -1 : 1));
-  return { tokens, terms: terms.slice(0, limit) };
+  return { tokens, terms: mergeTraversals(tokens, traversals, limit) };
 }
 
 module.exports = {
   analyzeQuery,
+  mergeTraversals,
   singleSourceBoundedDijkstra,
   findClosestWordByNormalizedLCS,
   charMask,

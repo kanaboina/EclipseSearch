@@ -11,14 +11,11 @@ function parseBody(body) {
   try { return JSON.parse(body); } catch { return null; }
 }
 
-function stripSessionId(body) {
+function publicBody(body, fromCache) {
   try {
     const parsed = JSON.parse(body);
-    if (parsed.sessionId) {
-      delete parsed.sessionId;
-      // Complete public results can be shared without an origin session.
-      parsed.fromCache = true;
-    }
+    delete parsed.sessionId;
+    parsed.fromCache = fromCache;
     return JSON.stringify(parsed);
   } catch {
     return body;
@@ -28,8 +25,9 @@ function stripSessionId(body) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    const originBase = String(env.ORIGIN).replace(/\/+$/, '');
     if (request.method !== 'GET' || url.pathname !== '/api/search' || url.searchParams.has('sessionId')) {
-      return fetch(new Request(env.ORIGIN + url.pathname + url.search, request));
+      return fetch(new Request(originBase + url.pathname + url.search, request));
     }
     const params = new URLSearchParams(url.searchParams);
     params.set('q', normalizeQuery(params.get('q')));
@@ -37,12 +35,13 @@ export default {
     const cacheKey = new Request(`${url.origin}${url.pathname}?${params}`, { method: 'GET' });
     const cache = caches.default;
 
-    const hit = await cache.match(cacheKey);
+    // Cache failures must not prevent an origin search.
+    const hit = await cache.match(cacheKey).catch(() => undefined);
     if (hit) {
       const body = await hit.text();
       // Ignore entries from older deployments that lost their pagination session.
       if (parseBody(body)?.hasMore === false) {
-        const res = new Response(stripSessionId(body), hit);
+        const res = new Response(publicBody(body, true), hit);
         res.headers.delete('Content-Length');
         res.headers.set('X-Cache', 'HIT');
         res.headers.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
@@ -50,7 +49,7 @@ export default {
       }
     }
 
-    const originRes = await fetch(`${env.ORIGIN}${url.pathname}?${params}`);
+    const originRes = await fetch(`${originBase}${url.pathname}?${params}`);
     if (!originRes.ok) return originRes;
 
     const body = await originRes.text();
@@ -61,12 +60,12 @@ export default {
       return res;
     }
     // A complete result set needs no continuation session and is safe to share.
-    const strippedBody = stripSessionId(body);
+    const strippedBody = publicBody(body, false);
     const res = new Response(strippedBody, originRes);
     res.headers.delete('Content-Length');
     res.headers.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
     res.headers.set('X-Cache', 'MISS');
-    ctx.waitUntil(cache.put(cacheKey, new Response(strippedBody, res)));
+    ctx.waitUntil(cache.put(cacheKey, new Response(strippedBody, res)).catch(() => {}));
     return res;
   },
 };

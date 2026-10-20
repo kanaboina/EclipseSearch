@@ -14,7 +14,7 @@
     "test:relevance": "node scripts/relevance-test.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": "20 || >=22"
   },
   "dependencies": {
     "compromise": "^14.14.0",

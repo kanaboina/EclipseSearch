@@ -1,5 +1,7 @@
 # HTTP Load Test Report — EclipseSearch v2
 
+> Historical report from the earlier implementation, retained for comparison. These results were not rerun for the bug audit. The traffic percentages below were intended weights; the old script rotated unweighted templates. P95 values were interpolated from P90/P97.5, not measured. Use the [README](../../README.md#real-http-load-testing-autocannon-on-atlas-schema-10k-catalog) for the snapshot linked to retained JSON and current limitations.
+
 **Date:** October 20, 2026  
 **Load Testing Tool:** `autocannon v8.0.0`  
 **Protocol:** Real HTTP/1.1 over TCP (`GET /api/search`)  
@@ -12,7 +14,7 @@
 
 A real HTTP load test was performed across three traffic arrival scenarios ranging from steady state (15 CCU) to peak load (50 CCU) and stress surge (100 CCU). Over **35,514 total requests**, the server maintained **0% errors**, **0 timeouts**, and **sub-25 ms P99 latency** under steady-state traffic.
 
-| Scenario | Arrival Rate | Average | P50 (Median) | P90 | **P95** | **P99** | Max | Errors |
+| Scenario | Arrival Rate | Average | P50 (Median) | P90 | **P95 (estimate)** | **P99** | Max | Errors |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Steady-State (15 CCU)** | **1,154 req/s** | 12.54 ms | 15.00 ms | 17.00 ms | **18.00 ms** | **24.00 ms** | 82 ms | **0** |
 | **Peak Load (50 CCU)** | **1,208 req/s** | 41.31 ms | 37.00 ms | 51.00 ms | **54.00 ms** | **77.00 ms** | 753 ms | **0** |
@@ -39,7 +41,7 @@ Real-world search engines do not receive uniform synthetic queries. The benchmar
 
 * **Client Concurrency**: 15, 50, and 100 simultaneous concurrent connections.
 * **HTTP Pipelining**: `1` (realistic browser behavior where queries are issued on interaction).
-* **Payload Verification**: Each response returned HTTP 200 with structured JSON containing `data`, `sessionId`, `hasMore`, and pagination metadata.
+* **Payload verification**: Autocannon records HTTP status counts; it does not validate JSON bodies or page contents. Separate tests cover those assertions.
 
 ---
 
@@ -56,7 +58,7 @@ The table below details all recorded latency percentiles across the test scenari
 | **Min Latency** | 1.00 ms | 2.00 ms | 2.00 ms |
 | **P50 (Median)** | **15.00 ms** | **37.00 ms** | **81.00 ms** |
 | **P90** | 17.00 ms | 51.00 ms | 90.00 ms |
-| **P95** | **18.00 ms** | **54.00 ms** | **100.50 ms** |
+| **P95 (estimate)** | **18.00 ms** | **54.00 ms** | **100.50 ms** |
 | **P97.5** | 19.00 ms | 57.00 ms | 111.00 ms |
 | **P99** | **24.00 ms** | **77.00 ms** | **125.00 ms** |
 | **P99.9** | 38.00 ms | 429.00 ms | 1,992.00 ms |
@@ -67,17 +69,9 @@ The table below details all recorded latency percentiles across the test scenari
 
 ---
 
-## 4. Architectural Analysis
+## 4. Current implementation notes
 
-### Why P99 Remains Sub-25ms Under Steady Traffic
-1. **Precomputed TypedArray Neighbor Index (`neighborIndex.js`)**:
-   Query semantic expansion does not execute Dijkstra graph traversals at query time. Graph traversal is precomputed into contiguous `Uint32Array` neighbor buffers, keeping token expansion under **0.05 ms**.
-2. **Singleflight Request Coalescing (`singleflight.js`)**:
-   When hundreds of clients search for trending wallpapers (60% of traffic), concurrent identical requests coalesce into **one** fetch. 
-3. **Session-Buffered Progressive Pagination (`progressiveSearch.js`)**:
-   Deep scrolls (`page=2`, `page=3`) do not trigger secondary database queries. They slice in-memory cached pools via `sessionId`, yielding instant sub-millisecond responses.
-4. **Bitmask LCS Typo Filter (`semanticDijkstra.js`)**:
-   Misspelled queries ("dragn castel") pass through a 32-bit bitmask prefilter before dynamic programming runs, avoiding CPU spikes.
+The index precomputes hop-bounded graph distances when writes occur. Live sessions retain ranked IDs and hydrate requested pages from MongoDB, rechecking visibility; mock sessions slice cached rows. These historical timings do not measure live database queries or establish the cause of tail latency. Typo matching uses a safe disjoint-alphabet check and at most two fallback attempts, including misses.
 
 ---
 
@@ -90,11 +84,11 @@ cd backend
 npm run test:load
 ```
 
-To target a live MongoDB Atlas cluster, define `MONGODB_URI` in `backend/.env`:
+To target a live MongoDB Atlas cluster, export `MONGODB_URI` into the process environment (a `.env` file alone is not loaded):
 
 ```env
 PORT=5000
 MONGODB_URI=mongodb+srv://<user>:<password>@cluster.mongodb.net/eclipsesearch
 ```
 
-Then rerun `npm run test:load`. The test suite will automatically recognize the live Atlas instance and test against your cluster.
+Then rerun `npm run test:load`. The script uses the configured database and fails if startup cannot initialize it.

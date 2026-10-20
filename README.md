@@ -1,19 +1,19 @@
 # Eclipse Fantasy — Semantic Search Engine
 
-[![Tests](https://img.shields.io/badge/tests-217%20passing-brightgreen.svg)](./backend/test/)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-blue.svg)](https://nodejs.org/)
+[![Tests](https://img.shields.io/badge/tests-250%20passing-brightgreen.svg)](./backend/test/)
+[![Node](https://img.shields.io/badge/node-20.x%20or%20%3E%3D22-blue.svg)](https://nodejs.org/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas%20Search-green.svg)](https://www.mongodb.com/atlas/database)
 [![Peak Throughput](https://img.shields.io/badge/in--process%20peak-28.4k%20QPS-purple.svg)](#concurrency-ladder-1k--20k-concurrent-searches)
-[![HTTP Load](https://img.shields.io/badge/autocannon-1.2k%20req%2Fs%20%C2%B7%200%20errors-orange.svg)](#real-http-load-testing-autocannon-on-atlas-schema-10k-catalog)
+[![HTTP Load](https://img.shields.io/badge/autocannon-historical%20load%20data-orange.svg)](#real-http-load-testing-autocannon-on-atlas-schema-10k-catalog)
 [![Edge Cache](https://img.shields.io/badge/benchmarks-no%20Cloudflare%20cache-lightgrey.svg)](#benchmark-scope--methodology)
 [![Relevance](https://img.shields.io/badge/nDCG%4010-0.944-brightgreen.svg)](#search-relevance-results)
 
 A deterministic semantic search engine and associative knowledge graph for fantasy, anime and artistic wallpaper catalogs.
 
-**Graph traversal happens only when the graph is written — never while serving a search.** Bounded Dijkstra runs at write time and its results go into a flat, `TypedArray`-backed top-K neighbor index. At query time, expanding a search is a set of array lookups. In-flight requests are coalesced (singleflight). Pagination preserves a per-session ranked pool. Live mode hydrates each page from MongoDB to recheck visibility; demo mode slices cached rows.
+**Graph traversal happens only when the graph is written — never while serving a search.** Hop-bounded shortest-path traversal runs at write time and its results go into a flat, `TypedArray`-backed top-K neighbor index. At query time, expanding a search is a set of array lookups. In-flight requests are coalesced (singleflight). Pagination preserves a per-session ranked pool. Live mode hydrates each page from MongoDB to recheck visibility; demo mode slices cached rows.
 
 > [!IMPORTANT]
-> **All performance figures in this document are origin-only.** They were measured **without the Cloudflare edge cache** ([`searchCacheWorker.js`](./backend/src/edge/searchCacheWorker.js)), without any CDN, Redis or other external cache layer, and on a single Node.js process. In production, cacheable public queries are answered at the edge before they reach the origin, so these numbers are a **worst-case floor** and not the expected steady state.
+> **All performance figures in this document are origin-only.** They were measured **without the Cloudflare edge cache** ([`searchCacheWorker.js`](./backend/src/edge/searchCacheWorker.js)), without any CDN, Redis or other external cache layer, and on a single Node.js process. In production, cacheable public queries are answered at the edge before they reach the origin, so these are observations for the stated fixtures and runtimes. They do not establish production latency or capacity.
 
 ---
 
@@ -60,7 +60,7 @@ flowchart LR
         direction TB
         UP["Upload / Edit / Backfill"] --> AI["AI expansion chain<br/>Gemini, Groq, OpenAI"]
         AI --> PERSIST["bulkWrite SemanticNode<br/>+ addEdges to memoryGraph"]
-        PERSIST --> DIJ["Bounded Dijkstra<br/>Dial buckets, cost 6, 2 hops"]
+        PERSIST --> DIJ["Hop-bounded traversal<br/>Exact-hop frontiers, cost 6, 2 hops"]
         DIJ --> IDX["NeighborIndex.update<br/>affected region only"]
         AI -.->|all providers down| DRAFT["Draft + exponential backoff worker"]
     end
@@ -90,7 +90,7 @@ The knowledge graph stores typed, weighted relations: synonym, hyponym, hypernym
 When a word is added or edited, `NeighborIndex.update(graph, changedWords)`:
 
 1. Runs a BFS outward from the changed words for `MAX_HOPS = 2` hops. These are the only nodes whose shortest paths can have changed.
-2. Runs **Dial's bucket-queue Dijkstra** (integer costs 0..6, +1 friction on hop 2) from each affected node.
+2. Runs **shortest paths with a separate frontier per exact hop count** (integer edge weights 1..6, +1 friction on hop 2) from each affected node.
 3. Writes the cheapest `K = 20` neighbors into flat buffers:
 
 ```text
@@ -145,10 +145,10 @@ The engine uses AI only to discover new words, never during a search. If none of
 | 1 | **Read/write split** (precompute at write time) | `neighborIndex.js` | Writes are rare and reads are frequent, so the expensive traversal moves to the rare side. |
 | 2 | **Struct-of-arrays in `TypedArray`s** | `neighborIndex.js` | Cache-friendly sequential reads and no per-node heap objects for V8's GC to scan. 10k nodes × K=20 take about **1.6 MB**. |
 | 3 | **Incremental, region-bounded updates** | `NeighborIndex.update` | Only nodes within 2 hops of a change are recomputed. A full rebuild is needed only at startup or backfill. |
-| 4 | **Dial's algorithm** (bucket queue) | `semanticDijkstra.js` | Integer costs 0..6 allow O(1) bucket operations with no binary heap and no `log n` factor. |
+| 4 | **Exact-hop frontiers** | `semanticDijkstra.js` | Separate distance states for each hop count preserve viable short paths; terminal states need no expansion. |
 | 5 | **Hop friction + cost ceiling** | `semanticDijkstra.js` | Prevents *dragon → animal → cat* style drift and bounds the search space. |
-| 6 | **Bitmask + popcount pre-filter** | `findClosestWordByNormalizedLCS` | A 32-bit AND and a SWAR popcount reject most dictionary words before the O(n·m) DP runs. |
-| 7 | **Branch-and-bound on length** | `findClosestWordByNormalizedLCS` | Skips any candidate whose best possible score cannot beat the current best. |
+| 6 | **Disjoint alphabet prefilter** | `findClosestWordByNormalizedLCS` | Disjoint a–z masks reject impossible matches. Shared-character counts are not a safe LCS bound when letters repeat. |
+| 7 | **Branch-and-bound on length** | `findClosestWordByNormalizedLCS` | Skips any candidate whose best possible score cannot match the current best; equal scores remain eligible for lexical tie-breaking. |
 | 8 | **Compact DP rows** | `lcsLength` | Uses two `Uint8Array` rows allocated per comparison. |
 | 9 | **Negative caching** | LRU `typoCache` (5,000) | Misses are stored as a `NO_MATCH` sentinel, so repeated garbage queries cost O(1). |
 | 10 | **Typo budget** (`MAX_TYPO_TOKENS = 2`) | expansion | Limits CPU per request, which mitigates algorithmic-complexity DoS. |
@@ -173,21 +173,21 @@ npm test
 
 ### Execution summary
 
-Verified on **2026-10-20**, against [commit `b69e119`](https://github.com/kanaboina/EclipseSearch/commit/b69e1191bf034bfb491bda01a91f8ea5eb7e7bce), using **Node.js v24.21.0**, **npm 11.19.0**, and **Ubuntu 26.04.1**.
+Verified on **2026-10-20**, for the bug-audit changes based on [commit `245a1a1`](https://github.com/kanaboina/EclipseSearch/commit/245a1a19888023da1585f04d9bb4f91bab0ac9a5), using **Node.js v24.21.0**, **npm 11.19.0**, and **Ubuntu 26.04.1**.
 
 ```text
 Command:         npm test --prefix backend  (from repository root)
-Test files:       21
-Total tests:     217
-Passed:          217
+Test files:       22
+Total tests:     250
+Passed:          250
 Failed:            0
 Cancelled:         0
 Skipped:           0
 Pass rate:      100%
-Runner duration: 14.640 s
+Runner duration: 8.634 s
 ```
 
-This includes **21 added regression tests**: 17 in `prRegression.test.js` and 4 in `edgeWorker.test.js`. Counts include the server lifecycle parent test and its 9 subtests. Durations are observations from this run, not performance guarantees.
+This audit adds **33 regression tests**: 30 in `bugAudit.test.js` and 3 in `edgeWorker.test.js`, alongside the earlier 21 regressions. Counts include the server lifecycle parent test and its 9 subtests. Durations are observations from this run, not performance guarantees.
 
 The suite exercises a generated catalog, synthetic AI provider responses, MongoDB model/collection fixtures, an HTTP server, and a simulated Worker Cache API. It does **not** verify a live Atlas cluster, real AI providers, or a deployed Cloudflare Worker. Live Atlas verification requires a configured compatible database.
 
@@ -196,8 +196,8 @@ The suite exercises a generated catalog, synthetic AI provider responses, MongoD
 | Suite | Tests | Status | Verification focus |
 |:---|:---:|:---:|:---|
 | `textNlp.test.js` | 12 | ✅ | Singularisation (`-ies`, `-shes`, `-ches`, `-xes`, irregulars), general and domain stopwords, token normalisation (internal hyphens preserved) |
-| `memoryGraph.test.js` | 14 | ✅ | Asymmetric hyponym/hypernym weights, symmetric relations, self-loop pruning, 1..6 clamp, rebuild and init |
-| `semanticDijkstra.test.js` | 15 | ✅ | PoS penalties (15 / 6 / 1), Dial buckets, hop friction, cost and hop cutoffs, LCS typo tiers (≥0.80, 0.55–0.80) |
+| `memoryGraph.test.js` | 14 | ✅ | Asymmetric hyponym/hypernym weights, symmetric relations, self-loop pruning, 1..6 weight filtering, rebuild and init |
+| `semanticDijkstra.test.js` | 15 | ✅ | PoS penalties (15 / 6 / 1), Bounded traversal, hop friction, cost and hop cutoffs, LCS typo tiers (≥0.80, 0.55–0.80) |
 | `searchBufferCache.test.js` | 8 | ✅ | LRU ordering, TTL expiry, hit promotion, generation-based invalidation |
 | `wallpaperDTO.test.js` | 8 | ✅ | Strips internal and sensitive fields, safe category projection, URL fallbacks |
 | `visibilityFilter.test.js` | 5 | ✅ | Draft rejection, deletion-pending exclusion, publish-date gating |
@@ -215,22 +215,24 @@ The suite exercises a generated catalog, synthetic AI provider responses, MongoD
 | `progressiveSearch.test.js` | 10 | ✅ | searchKey edge cases (null, falsy, whitespace), exported constants, empty pool in legacy and ID-first mode, custom batchSize, session isolation, doc reordering, session introspection |
 | `edgeCases.test.js` | 16 | ✅ | Lifecycle cache invalidation, expandQuerySemantically edge cases (empty, unknown, multi-word, TOP_TERMS cap), charMask/popcount boundaries, analyzeQuery hyphens and emoji, normalizeTokenStrict, dataset generator validation |
 | `prRegression.test.js` | 17 | ✅ | Complete pagination, hydration retries, concurrent sessions, semantic retrieval, live visibility, model registration, partial expansion persistence, draft retries, persisted unlinking, backfill accounting, totals, and HTTP input/error boundaries |
-| `edgeWorker.test.js` | 4 | ✅ | Private continuation sessions, caching complete results without session sharing, ignoring obsolete cached pages, and forwarding non-JSON responses |
+| `edgeWorker.test.js` | 7 | ✅ | Private continuation sessions, caching complete results without session sharing, ignoring obsolete cached pages, non-JSON forwarding, cache flags, origin URL joining, and cache failures |
+
+| `bugAudit.test.js` | 30 | ✅ | Capacity growth, exhaustive bounded-path/scoring comparisons, typo pruning and invalidation, explicit/replayed pages, expired/mismatched sessions, invalid IDs/URLs/weights, async timing, patch edits, worker batching/status, cache retries/races, and script behavior |
 
 ### Stress test results (10,000-word synthetic graph)
 
-These results are from the same 217-test run above. **Test duration** is the Node test runner's duration for the entire test, including fixtures and assertions; it is not an isolated operation latency or a throughput measurement.
+These results are from the same 250-test run above. **Test duration** is the Node test runner's duration for the entire test, including fixtures and assertions; it is not an isolated operation latency or a throughput measurement.
 
 | ID | Scenario | Passing assertions | Test duration (ms) | Result |
 |:---:|:---|:---|---:|:---:|
-| S1 | Build `NeighborIndex` (K=15) over 10k words | Internal build < 3,000 ms; sampled nodes have ≤ 15 neighbors | 191.14 | ✅ |
-| S2 | 5,000 sequential `expand()` calls across the vocabulary | > 1,000 expansions/s; each expansion returns terms | 679.91 | ✅ |
-| S3 | 2,000 concurrent identical searches | Exactly 1 pool fetch; every caller gets 20 rows; `pending = 0` | 443.05 | ✅ |
-| S4 | 3,000 concurrent users × 3 pages (9,000 searches) | 3,000 unique session IDs; zero duplicates; > 1,000 searches/s | 677.76 | ✅ |
-| S5 | 10,000-token query + 1,000 repeated typo lookups | Internal expansion < 10 s; repeated typo lookups return the same cached result | 8,374.51 | ✅ |
+| S1 | Build `NeighborIndex` (K=15) over 10k words | Internal build < 3,000 ms; sampled nodes have ≤ 15 neighbors | 240.20 | ✅ |
+| S2 | 5,000 sequential `expand()` calls across the vocabulary | > 1,000 expansions/s; each expansion returns terms | 945.62 | ✅ |
+| S3 | 2,000 concurrent identical searches | Exactly 1 pool fetch; every caller gets 20 rows; `pending = 0` | 603.07 | ✅ |
+| S4 | 3,000 concurrent users × 3 pages (9,000 searches) | 3,000 unique session IDs; zero duplicates; > 1,000 searches/s | 983.49 | ✅ |
+| S5 | 10,000-token query + 1,000 repeated typo lookups | Internal expansion < 10 s; repeated typo lookups return the same cached result | 451.30 | ✅ |
 
 > [!NOTE]
-> S5 calls the traversal-based `expandQuerySemantically` function directly with all 10,000 vocabulary words. Its full test duration accounts for about 8.37 s of the 14.64 s suite run. The HTTP API rejects queries longer than 500 characters or 20 whitespace-delimited tokens.
+> S5 calls the traversal-based `expandQuerySemantically` function directly with all 10,000 vocabulary words. Its full test duration was 0.451 s in the 8.634 s suite run. Term scoring groups equal absence penalties for large queries and retains only the requested top terms. The HTTP API rejects queries longer than 500 characters or 20 whitespace-delimited tokens.
 
 ---
 
@@ -238,7 +240,7 @@ These results are from the same 217-test run above. **Test duration** is the Nod
 
 ### Benchmark scope & methodology
 
-The concurrency ladder, HTTP load, and component micro-benchmark tables below retain their previously recorded measurements. They were not rerun during the 217-test verification above; their runtimes and fixture setup differ from that verification run.
+The concurrency ladder and HTTP load sections retain historical measurements; they were not rerun for this audit. The component benchmark was rerun with completed asynchronous operations on Node.js v24.21.0. The older load runs used different code, runtimes and fixtures.
 
 | Parameter | Value |
 |:---|:---|
@@ -301,48 +303,60 @@ The concurrency ladder, HTTP load, and component micro-benchmark tables below re
 
 ### Component micro-benchmarks (10,000-word search space)
 
-These are per-function latencies from [`scripts/benchmark-10k.js`](./backend/scripts/benchmark-10k.js), exported to [`test-metrics-10k.json`](./backend/test-metrics-10k.json). The graph has 10,002 nodes and 115,734 adjacency entries.
+Measured on **2026-10-20**, Node.js **v24.21.0**, with the corrected async runner in [`scripts/benchmark-10k.js`](./backend/scripts/benchmark-10k.js). The [JSON snapshot](./backend/test-metrics-10k.json) contains 41 operations, 10,000 vocabulary words, 10,002 graph nodes and 115,744 adjacency entries. Service and ingestion timings include completed promises; database calls use synthetic in-process models. Typo rows measure warm LRU lookups after warmup, including the cached miss. No real database/provider latency is measured.
 
-| Function / process | Category | Samples | Mean | P50 | P95 | P99 | Max | Throughput |
-|:---|:---|:---:|---:|---:|---:|---:|---:|---:|
-| `normalizeToken` (clean) | NLP | 1,000 | 0.0002 ms | 0.0001 ms | 0.0002 ms | 0.0003 ms | 0.011 ms | 6.16 M ops/s |
-| `normalizeToken` (symbols/emoji) | NLP | 1,000 | 0.0005 ms | 0.0003 ms | 0.0003 ms | 0.0005 ms | 0.184 ms | 2.12 M ops/s |
-| `singularize` (regular plural) | NLP | 200 | 0.524 ms | 0.440 ms | 0.808 ms | 3.134 ms | 3.466 ms | 1,910 ops/s |
-| `singularize` (irregular `-ies`) | NLP | 200 | 0.376 ms | 0.355 ms | 0.531 ms | 0.667 ms | 0.730 ms | 2,657 ops/s |
-| `analyzeQuery` (1 word) | NLP | 100 | 0.274 ms | 0.264 ms | 0.324 ms | 0.506 ms | 0.506 ms | 3,653 ops/s |
-| `analyzeQuery` (3 words) | NLP | 100 | 0.828 ms | 0.812 ms | 1.032 ms | 1.112 ms | 1.112 ms | 1,208 ops/s |
-| `analyzeQuery` (6 words, noisy) | NLP | 100 | 2.274 ms | 2.249 ms | 2.595 ms | 2.658 ms | 2.658 ms | 440 ops/s |
-| `extractCleanWords` (standard doc) | NLP · write | 100 | 9.081 ms | 8.944 ms | 10.262 ms | 10.552 ms | 10.552 ms | 110 ops/s |
-| `rebuildGraph` (10k nodes) | Graph · write | 25 | 10.996 ms | 10.732 ms | 14.330 ms | 16.232 ms | 16.232 ms | 91 ops/s |
-| `addEdges` (5 edges into 10k) | Graph · write | 500 | 0.0002 ms | 0.0001 ms | 0.0002 ms | 0.0003 ms | 0.016 ms | 5.06 M ops/s |
-| Dijkstra Dial (hub, deg ≈ 40) | Dijkstra · write | 200 | 0.258 ms | 0.247 ms | 0.365 ms | 0.436 ms | 0.581 ms | 3,874 ops/s |
-| Dijkstra Dial (mid, deg ≈ 12) | Dijkstra · write | 500 | 0.015 ms | 0.014 ms | 0.016 ms | 0.019 ms | 0.183 ms | 68,520 ops/s |
-| Dijkstra Dial (leaf, deg ≈ 3) | Dijkstra · write | 500 | 0.0006 ms | 0.0006 ms | 0.0006 ms | 0.0008 ms | 0.006 ms | 1.69 M ops/s |
-| LCS typo (1-char: `dragn`) | Typo | 50 | 0.064 ms | 0.071 ms | 0.079 ms | 0.126 ms | 0.126 ms | 15,695 ops/s |
-| LCS typo (moderate: `castlee`) | Typo | 50 | 0.450 ms | 0.441 ms | 0.528 ms | 0.538 ms | 0.538 ms | 2,224 ops/s |
-| LCS typo (full 10k miss scan) | Typo | 30 | 2.560 ms | 2.566 ms | 2.728 ms | 2.874 ms | 2.874 ms | 391 ops/s |
-| `expandQuerySemantically` (1 word, live) | Expansion · live | 50 | 1.479 ms | 1.417 ms | 1.832 ms | 2.020 ms | 2.020 ms | 676 ops/s |
-| `expandQuerySemantically` (3 words, live) | Expansion · live | 50 | 3.941 ms | 3.944 ms | 4.256 ms | 4.344 ms | 4.344 ms | 254 ops/s |
-| `buildAtlasPipeline` (pre-expanded) | Ranking | 500 | 0.037 ms | 0.024 ms | 0.033 ms | 0.111 ms | 7.222 ms | 27,029 ops/s |
-| `buildTextFallbackQuery` | Ranking | 1,000 | 0.0007 ms | 0.0006 ms | 0.0007 ms | 0.0027 ms | 0.034 ms | 1.46 M ops/s |
-| `publicVisibilityFilter` | Utils | 1,000 | 0.0002 ms | 0.0002 ms | 0.0003 ms | 0.0004 ms | 0.005 ms | 5.73 M ops/s |
-| `SearchBufferCache.get` (hit) | Cache | 1,000 | 0.0002 ms | 0.0002 ms | 0.0002 ms | 0.0004 ms | 0.007 ms | 5.46 M ops/s |
-| `SearchBufferCache.set` (eviction) | Cache | 500 | 0.0005 ms | 0.0005 ms | 0.0007 ms | 0.0012 ms | 0.020 ms | 2.02 M ops/s |
-| `wallpaperCardDTO` (batch 50) | DTO | 200 | 0.0027 ms | 0.001 ms | 0.011 ms | 0.015 ms | 0.024 ms | 366,324 ops/s |
-| `sanitizeExpansions` (3 × 25 edges) | Ingestion | 500 | 0.0048 ms | 0.0037 ms | 0.0088 ms | 0.0116 ms | 0.027 ms | 207,960 ops/s |
-| `findUnseenWords` (50 vs 10k) | Ingestion | 200 | 0.167 ms | 0.164 ms | 0.181 ms | 0.298 ms | 0.301 ms | 5,976 ops/s |
+| Function / process | Category | Samples | Mean (ms) | P50 (ms) | P95 (ms) | P99 (ms) | Max (ms) |
+|:---|:---|---:|---:|---:|---:|---:|---:|
+| `singularize (regular plural - dragons)` | NLP | 200 | 1.1712 | 1.0500 | 1.6534 | 2.6832 | 4.6416 |
+| `singularize (irregular -ies - fairies)` | NLP | 200 | 1.1184 | 0.9147 | 1.5942 | 2.4414 | 3.4958 |
+| `singularize (irregular -ches - witches)` | NLP | 200 | 0.9413 | 0.9130 | 1.1578 | 1.6084 | 2.1822 |
+| `singularize (non-singular -ss - abyss)` | NLP | 200 | 0.6893 | 0.6696 | 0.7931 | 1.2613 | 1.3262 |
+| `singularize (short/num - 4k)` | NLP | 200 | 0.0005 | 0.0003 | 0.0006 | 0.0011 | 0.0138 |
+| `normalizeToken (clean token)` | NLP | 1000 | 0.0006 | 0.0005 | 0.0008 | 0.0011 | 0.0223 |
+| `normalizeToken (noisy symbols/emoji)` | NLP | 1000 | 0.0009 | 0.0008 | 0.0011 | 0.0017 | 0.0209 |
+| `extractCleanWords (standard wallpaper doc)` | NLP | 100 | 21.4564 | 21.3373 | 23.0924 | 27.1251 | 27.1251 |
+| `extractCleanWords (dense wallpaper doc)` | NLP | 100 | 35.0216 | 34.9931 | 36.1165 | 36.3978 | 36.3978 |
+| `analyzeQuery (1-word entity: dragon)` | NLP | 100 | 0.7727 | 0.7593 | 0.8530 | 1.3743 | 1.3743 |
+| `analyzeQuery (3-word query: dark dragon castle)` | NLP | 100 | 2.2156 | 2.1780 | 2.4328 | 2.9640 | 2.9640 |
+| `analyzeQuery (6-word noisy query with stopwords)` | NLP | 100 | 5.9864 | 5.8146 | 7.0994 | 8.6501 | 8.6501 |
+| `rebuildGraph (hydrate all 10,000 nodes)` | MemoryGraph | 25 | 30.4315 | 29.5077 | 36.1244 | 40.3299 | 40.3299 |
+| `addEdges (insert 5 edges into 10k graph)` | MemoryGraph | 500 | 0.0008 | 0.0006 | 0.0009 | 0.0019 | 0.0391 |
+| `directedWeights (hyponym forward/reverse)` | MemoryGraph | 1000 | 0.0003 | 0.0003 | 0.0004 | 0.0006 | 0.0177 |
+| `directedWeights (symmetric weight)` | MemoryGraph | 1000 | 0.0003 | 0.0003 | 0.0004 | 0.0006 | 0.0151 |
+| `Bounded traversal (dragon, degree 265)` | Dijkstra | 200 | 0.5158 | 0.4707 | 0.7364 | 1.0560 | 1.1760 |
+| `Bounded traversal (starblade, degree 17)` | Dijkstra | 500 | 0.0210 | 0.0203 | 0.0237 | 0.0377 | 0.0535 |
+| `Bounded traversal (darkness, degree 1)` | Dijkstra | 500 | 0.0007 | 0.0006 | 0.0010 | 0.0013 | 0.0209 |
+| `findClosestWordByNormalizedLCS (cached typo: dragn)` | LCS | 50 | 0.0011 | 0.0009 | 0.0017 | 0.0045 | 0.0045 |
+| `findClosestWordByNormalizedLCS (cached typo: castlee)` | LCS | 50 | 0.0012 | 0.0008 | 0.0014 | 0.0204 | 0.0204 |
+| `findClosestWordByNormalizedLCS (cached miss: zzzzzzzz)` | LCS | 30 | 0.0008 | 0.0007 | 0.0010 | 0.0015 | 0.0015 |
+| `expandQuerySemantically (1-word exact: dragon)` | Expansion | 50 | 1.7308 | 1.7112 | 1.9103 | 2.6831 | 2.6831 |
+| `expandQuerySemantically (3-word multi-source: dragon knight castle)` | Expansion | 50 | 5.5863 | 5.4410 | 6.3601 | 6.8980 | 6.8980 |
+| `expandQuerySemantically (typo + exact: dragn knight)` | Expansion | 30 | 3.6448 | 3.6032 | 3.7934 | 4.2500 | 4.2500 |
+| `boostFor (cost-to-boost curve)` | Ranking | 1000 | 0.0003 | 0.0003 | 0.0004 | 0.0007 | 0.0347 |
+| `buildAtlasPipeline (with precomputed expansion)` | Ranking | 500 | 0.0301 | 0.0232 | 0.0568 | 0.0741 | 0.1286 |
+| `buildAtlasPipeline (with 10k precomputed neighbor index)` | Ranking | 30 | 2.3220 | 2.3086 | 2.4994 | 2.7109 | 2.7109 |
+| `buildTextFallbackQuery` | Ranking | 1000 | 0.0019 | 0.0018 | 0.0022 | 0.0091 | 0.0545 |
+| `publicVisibilityFilter` | Utils | 1000 | 0.0005 | 0.0005 | 0.0007 | 0.0011 | 0.0178 |
+| `SearchBufferCache.set` | Cache | 1000 | 0.0006 | 0.0006 | 0.0008 | 0.0014 | 0.0252 |
+| `SearchBufferCache.get (hit)` | Cache | 1000 | 0.0005 | 0.0005 | 0.0006 | 0.0009 | 0.0279 |
+| `SearchBufferCache.get (miss)` | Cache | 1000 | 0.0003 | 0.0002 | 0.0004 | 0.0005 | 0.0119 |
+| `SearchBufferCache.set under eviction pressure (>200 keys)` | Cache | 500 | 0.0008 | 0.0008 | 0.0011 | 0.0021 | 0.0247 |
+| `wallpaperCardDTO (single card)` | DTO | 1000 | 0.0007 | 0.0006 | 0.0009 | 0.0013 | 0.0146 |
+| `wallpaperCardDTO (batch 50 cards mapping)` | DTO | 200 | 0.0084 | 0.0033 | 0.0212 | 0.0391 | 0.6675 |
+| `searchService.search (cold query - cache miss)` | Service | 100 | 0.0315 | 0.0278 | 0.0503 | 0.0871 | 0.0871 |
+| `searchService.search (warm query - cache hit)` | Service | 500 | 0.0023 | 0.0020 | 0.0027 | 0.0109 | 0.0229 |
+| `searchService.search (page 2 - buffered slice)` | Service | 500 | 0.0022 | 0.0020 | 0.0026 | 0.0064 | 0.0309 |
+| `sanitizeExpansions (3 words x 25 raw edges)` | Ingestion | 500 | 0.0178 | 0.0156 | 0.0317 | 0.0421 | 0.0852 |
+| `findUnseenWords (filter 50 words vs 10k database)` | Ingestion | 200 | 0.4181 | 0.4132 | 0.4433 | 0.4776 | 0.4852 |
 
-> [!TIP]
-> **Why the precomputed index is faster on the read path.** The `Expansion · live` rows (1.5–3.9 ms) are the live-Dijkstra cost paid on **every** search when traversal is not precomputed. With the precomputed index, the same Dijkstra work (rows marked `· write`) runs only when the graph changes. The read path now does lookups into the precomputed index instead, which is how one process sustains ~28k searches/s.
->
-> The micro-benchmark script still measures the live expansion path for comparison. Re-run `npm run benchmark` to refresh it.
+The traversal rows describe write-time work for the precomputed index. The expansion rows call the traversal-based comparison function directly. `BENCHMARK_OUTPUT=/path/report.json` selects an alternate report path.
 
 ### Running the benchmarks
 
 ```bash
 cd backend
 
-npm test                              # full suite: unit + integration + SLA + stress (217 tests)
+npm test                              # full suite: unit + integration + SLA + stress (250 tests)
 node --test test/stress.test.js       # stress scenarios only
 npm run benchmark                     # component micro-benchmarks -> test-metrics-10k.json
 node --expose-gc scripts/concurrency-ladder.js   # 1k -> 20k ladder -> concurrency-ladder-results.json
@@ -357,53 +371,32 @@ node scripts/relevance-test.js --compare before  # A/B delta per query
 
 While the in-process concurrency ladder measures raw algorithmic capability without network overhead, [`scripts/http-load-test.js`](./backend/scripts/http-load-test.js) runs **real HTTP requests over TCP** against the live Node.js HTTP server ([`src/server.js`](./backend/src/server.js)), querying a **10,000-document Atlas-schema catalog** ([`src/mockAtlasData.js`](./backend/src/mockAtlasData.js)). *Last run: 2026-10-20, Node v26.8.1, `autocannon@^8`, single process, no Cloudflare cache.*
 
-The benchmark generates a **realistic traffic arrival mix** (28 request templates rotated by autocannon):
-* **60% Trending / Hot Queries** (8 queries × 2 variants = 16 templates): `cyberpunk neon`, `dark fantasy dragon`, `anime warrior girl`, `minimalist landscape`, `space nebula galaxy`, `samurai sunset`, `mystic forest light`, `steampunk city` — each also tested with `deviceType=phone`
-* **25% Long-Tail Queries** (8 templates): `phoenix fire blade`, `valkyrie celestial armor`, `shadow assassin moon`, `abyss underwater crystal`, `tundra frozen glacier`, `vortex storm lightning`, `shrine cherry blossom`, `golem ancient ruins`
-* **5% Typo Fallback** (4 templates): `cybrpunk non`, `dragn castel`, `anme warir`, `sakura blosom` — triggering bitmask + LCS fallback
-* **10% Multi-Page Pagination**: Sequential page requests (`page=2`, `page=3`) using session IDs primed before the benchmark, exercising in-memory session caching
+The current script rotates 100 weighted request entries: 60 hot, 25 long-tail, 5 typo and 10 explicit session-page requests when session warmup succeeds. The earlier script rotated unweighted templates, so the intended percentages do not describe those historical measurements. Repeated page numbers now replay the requested slice.
 
-#### HTTP Load Test Results (36,111 total HTTP requests · 0 errors · 0 timeouts)
+#### Historical HTTP snapshot
 
-| Scenario | Connections | Duration | Total Reqs | Arrival Rate (Req/s) | Avg Latency | P50 | P90 | **P95** | **P99** | P99.9 | Max | Throughput | Errors |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Scenario 1: Steady-State (15 CCU)** | 15 | 10.04 s | 11,561 | **1,156 req/s** | 12.52 ms | 15 ms | 17 ms | **18 ms** | **23 ms** | 36 ms | 76 ms | 2.31 MB/s | **0** |
-| **Scenario 2: Peak High-Load (50 CCU)** | 50 | 10.11 s | 12,400 | **1,240 req/s** | 40.16 ms | 37 ms | 50 ms | **51.5 ms** | **66 ms** | 482 ms | 771 ms | 2.47 MB/s | **0** |
-| **Scenario 3: Stress Surge (100 CCU)** | 100 | 10.25 s | 12,150 | **1,215 req/s** | 83.45 ms | 77 ms | 93 ms | **99.5 ms** | **121 ms** | 1,992 ms | 2,500 ms | 2.46 MB/s | **0** |
+The table below is taken directly from [`http-load-test-results.json`](./backend/http-load-test-results.json), recorded on Node.js v26.8.1 before this audit. P95 in that file was interpolated from P90/P97.5 and is not a measured percentile; it is omitted here. The corrected script emits `null` for unavailable P95 and prints measured P97.5 instead.
 
-> Raw metrics exported to [`http-load-test-results.json`](./backend/http-load-test-results.json).
+| Scenario | Connections | Requests | Req/s | Average (ms) | P50 (ms) | P90 (ms) | P97.5 (ms) | P99 (ms) | Errors / timeouts |
+|:---|---:|---:|---:|---:|---:|---:|---:|---:|:---|
+| Scenario 1: Steady-State (15 CCU) | 15 | 7646 | 764.6 | 19.27 | 22 | 26 | 29 | 39 | 0 / 0 |
+| Scenario 2: Peak Load (50 CCU) | 50 | 7400 | 740 | 68.31 | 63 | 82 | 95 | 111 | 0 / 0 |
+| Scenario 3: Stress Surge (100 CCU) | 100 | 7650 | 765 | 133.32 | 128 | 136 | 139 | 338 | 0 / 0 |
 
-#### Key Observations Under Real HTTP Traffic
-
-1. **Sub-23 ms P99 under steady traffic.** At 1,156 req/s (15 concurrent clients, `pipelining=1`), **P95 is 18 ms** and **P99 is 23 ms**. Semantic expansion, typo fallback, session management and JSON serialisation add negligible latency on top of Node's HTTP layer.
-2. **Stable throughput under 3.3× concurrency increase.** Increasing connections from 15 → 50 → 100 raises latency (queueing) but throughput stays in the narrow **1,156–1,240 req/s** band. This is characteristic of a CPU-bound server with no contention: the event loop is fully utilised and additional connections queue rather than degrade.
-3. **Tail latency is connection queueing.** P99.9 jumps from 36 ms (15 CCU) to 1,992 ms (100 CCU) because 100 clients contend for one event loop. The median stays at 77 ms even under 100 CCU, confirming that per-request service time is constant.
-4. **100% Reliability.** Across all 36,111 HTTP request-response cycles — including typo queries, pagination lookups and device-filtered searches — the server maintained **0 errors, 0 dropped connections, and 0 timeouts**.
-5. **Singleflight in action.** The 60% hot-query traffic share means most concurrent clients hit the same trending terms. Singleflight coalesces these into one `fetchPool` call, keeping latency flat despite the hot-key concentration.
-
-#### Autocannon vs. In-Process Ladder
-
-| Metric | In-Process Ladder | Autocannon HTTP |
-|:---|:---:|:---:|
-| What it measures | Engine overhead only (no TCP, no HTTP parsing, no JSON serialisation) | Full request lifecycle over TCP |
-| Peak throughput | **28,366 QPS** | **1,240 req/s** |
-| Bottleneck | CPU (expansion + session slice) | CPU + HTTP parsing + JSON `stringify` + TCP |
-| Errors | 0 / 210,000 | 0 / 36,111 |
-
-The ~23× gap between the two numbers is expected: autocannon pays the TCP + HTTP + JSON cost per request, and the 10k mock-Atlas search simulator scores candidates against the inverted token index on every new session, which the in-process ladder does not include.
+These synthetic catalog measurements exclude live Atlas round trips and Cloudflare caching. Autocannon checks HTTP status counts; JSON correctness and pagination are verified by the test suite. They do not establish the production bottleneck or scaling behavior.
 
 To run the HTTP load test at any time:
 ```bash
 cd backend
 npm run test:load
 ```
-*(If `MONGODB_URI` is provided in `backend/.env`, the server and test suite will automatically target your live Atlas cluster).*
+Export `MONGODB_URI` into the process environment to target a compatible live Atlas cluster. `.env` files are not loaded automatically.
 
 ---
 
 ### Search Relevance Results
 
-Reverified on **2026-10-20**, against the same commit and Node.js v24.21.0 runtime as the 217-test run, with `npm run test:relevance --prefix backend`. The 25-query golden set (K = 10) uses the 10k mock Atlas catalog. Results match the [existing relevance snapshot](./backend/benchmark-comparison/2026-10-20/relevance-after.json).
+Reverified on **2026-10-20**, for the same audit changes and Node.js v24.21.0 runtime as the 250-test run, with `npm run test:relevance --prefix backend`. The 25-query golden set (K = 10) uses the 10k mock Atlas catalog. Results match the [existing relevance snapshot](./backend/benchmark-comparison/2026-10-20/relevance-after.json).
 
 | Metric | Score |
 |:---|:---:|
@@ -467,7 +460,7 @@ EclipseSearch/
     │   │   ├── searchBufferCache.js        # LRU and prefetch buffer
     │   │   ├── searchLifecycle.js          # Upload, edit and rename hooks
     │   │   ├── searchRanking.js            # Atlas pipeline builder; reads NeighborIndex
-    │   │   ├── semanticDijkstra.js         # Dial's Dijkstra, LCS + bitmask prefilter + typo LRU
+    │   │   ├── semanticDijkstra.js         # Hop frontiers, LCS + disjoint masks + typo LRU
     │   │   ├── textNlp.js                  # Tokenise, singularise, stopwords
     │   │   └── wallpaperService.js         # Search execution and aggregation
     │   ├── utils/
@@ -475,11 +468,12 @@ EclipseSearch/
     │   │   └── wallpaperDTO.js             # Client-safe projection
     │   └── workers/
     │       └── draftRetryWorker.js         # Exponential-backoff retry worker
-    └── test/                               # 21 files · 217 tests
+    └── test/                               # 22 files · 250 tests
         ├── aiGraphService.test.js          (14)
+        ├── bugAudit.test.js                (30)
         ├── draftWorkerLifecycle.test.js    (10)
         ├── edgeCases.test.js              (16)
-        ├── edgeWorker.test.js             (4)
+        ├── edgeWorker.test.js             (7)
         ├── highPerfSearch.test.js          (13)
         ├── latencyMetrics.test.js          (8)
         ├── memoryGraph.test.js             (14)
@@ -505,7 +499,7 @@ EclipseSearch/
 
 ### Prerequisites
 
-- **Node.js** ≥ 18
+- **Node.js** 20.x or ≥ 22
 - **MongoDB** ≥ 6.0 (Atlas recommended for Atlas Search autocomplete)
 
 ### Install
@@ -517,7 +511,7 @@ npm install
 
 ### Configure
 
-Create `backend/.env`:
+Example process environment (export these values, or use Node’s `--env-file` flag with a local `.env` file):
 
 ```env
 PORT=5000
@@ -537,6 +531,7 @@ Deploy [`src/edge/searchCacheWorker.js`](./backend/src/edge/searchCacheWorker.js
 
 - caches complete `GET /api/search` result sets **without** a request `sessionId`; responses with more pages bypass caching and keep their private continuation session
 - normalises `q` by lower-casing, collapsing whitespace and sorting tokens, so equivalent queries share one entry
+- marks cache hits with `fromCache: true` and fresh complete origin responses with `fromCache: false`
 - sets `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`
 
 ---
@@ -584,9 +579,11 @@ See [`docs/atlas-search.md`](./backend/docs/atlas-search.md) for details.
 | **Session affinity** | Progressive sessions live in process memory. Behind multiple replicas, route by `sessionId` (sticky sessions) or move the session store to a shared cache. |
 | **Session memory** | Each session holds up to 200 rows plus a `Set`. The default LRU cap is 5,000 sessions with a 15-minute TTL. Size `max` from the available heap. |
 | **Index consistency** | `NeighborIndex` updates synchronously inside the write path. Readers in the same process see the new neighbors immediately after the write resolves. Other replicas pick them up on restart or on their own ingestion events. |
-| **Query length** | The live expansion path is linear in the number of tokens (see S5). Enforce a request-level limit, for example 64 characters or 8 tokens. |
+| **Query length** | The HTTP API enforces 500 characters and 20 whitespace-delimited tokens; direct library callers should bound their inputs. |
+| **Pagination** | Explicit `page` selects/replays visible results; omitting it advances the session cursor. Expired/unknown sessions without `q` return HTTP 410. Query/device mismatches return HTTP 400. Empty results report 0 total pages. |
+| **Worker batches** | Each tick recovers stale jobs once and processes at most 10 jobs (configurable `batchSize`). Successful retries preserve scheduled status. |
 | **Typo ranking** | With min-cost aggregation, typo-inherited neighbors can outrank the corrected word for short typos (`phenix`, `samuari`). Possible fix: give the corrected word a cost-0 slot. |
-| **Typo-cache invalidation** | The bitmask dictionary and typo LRU are rebuilt automatically when the vocabulary size changes. |
+| **Typo-cache invalidation** | The dictionary and typo LRU refresh on graph writes through `addEdges`, `rebuildGraph` or index rebuild/update, including vocabulary replacements of the same size. |
 | **Benchmark realism** | The ladder uses a mocked DB and burst arrivals on one process, **without Cloudflare caching**. Treat it as a measure of engine overhead, not end-to-end SLOs. |
 
 ---

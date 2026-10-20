@@ -101,7 +101,7 @@ function generate10kNodes(words) {
       // 40% bias toward hub nodes for realistic scale-free network topology
       let targetIdx;
       if (random() < 0.4) {
-        targetIdx = Math.floor(random() * 100);
+        targetIdx = Math.floor(random() * Math.min(100, N));
       } else {
         targetIdx = Math.floor(random() * N);
       }

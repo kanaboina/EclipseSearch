@@ -19,6 +19,7 @@ function clampPaging(page, limit) {
  * fetchBatch({ q, deviceType, limit, excludeIds }) -> raw wallpaper rows.
  */
 function createSearchService({ fetchBatch, cache = searchBufferCache, batchSize = BATCH, schedule = setImmediate } = {}) {
+  if (!Number.isInteger(batchSize) || batchSize < 1) throw new RangeError('batchSize must be a positive integer');
   const inflight = new Map(); // cacheKey -> Promise
 
   function absorb(entry, rows) {
@@ -33,15 +34,26 @@ function createSearchService({ fetchBatch, cache = searchBufferCache, batchSize 
     entry.hasMore = rows.length >= batchSize && added > 0;
   }
 
+  function fetchNext(key, params, entry, scheduled = false) {
+    const existing = inflight.get(key);
+    if (existing?.entry === entry) return existing;
+    const p = (scheduled ? new Promise((resolve) => schedule(resolve)) : Promise.resolve())
+      .then(() => fetchBatch({ ...params, limit: batchSize, excludeIds: Array.from(entry.seenIds) }))
+      .then((rows) => {
+        if (cache.generation === entry.generation && cache.get(key) === entry) absorb(entry, rows);
+      })
+      .catch((error) => { if (!scheduled) throw error; })
+      .finally(() => { if (inflight.get(key) === p) inflight.delete(key); });
+    p.entry = entry;
+    inflight.set(key, p);
+    return p;
+  }
+
   function prefetch(key, params, entry) {
     if (!entry.hasMore || inflight.has(key)) return;
-    const gen = cache.generation;
-    const p = new Promise((resolve) => schedule(resolve))
-      .then(() => fetchBatch({ ...params, limit: batchSize, excludeIds: Array.from(entry.seenIds) }))
-      .then((rows) => { if (cache.generation === gen) absorb(entry, rows); })
-      .catch(() => { entry.hasMore = false; })
-      .finally(() => inflight.delete(key));
-    inflight.set(key, p);
+    // Failure leaves the buffer retryable. Foreground requests surface their own
+    // fetch errors; speculative work must not create an unhandled rejection.
+    fetchNext(key, params, entry, true).catch(() => {});
   }
 
   async function search({ q, page, limit, deviceType }) {
@@ -52,21 +64,20 @@ function createSearchService({ fetchBatch, cache = searchBufferCache, batchSize 
     const startIdx = (P - 1) * L;
     const endIdx = startIdx + L;
 
-    let entry = cache.get(key);
-    if (!entry) {
-      entry = { items: [], seenIds: new Set(), hasMore: true };
-      const rows = await fetchBatch({ ...params, limit: batchSize, excludeIds: [] });
-      absorb(entry, rows);
-      cache.set(key, entry);
-    } else if (entry.items.length < endIdx && entry.hasMore) {
-      // Requested page beyond buffer: wait for in-flight prefetch, else fetch synchronously.
-      if (inflight.has(key)) await inflight.get(key);
-      while (entry.items.length < endIdx && entry.hasMore) {
-        const gen = cache.generation;
-        const rows = await fetchBatch({ ...params, limit: batchSize, excludeIds: Array.from(entry.seenIds) });
-        if (cache.generation !== gen) break;
-        absorb(entry, rows);
+    let entry;
+    // Invalidation can happen during any fetch. Restart from the current cache
+    // generation instead of returning or storing data fetched before that edit.
+    for (;;) {
+      entry = cache.get(key);
+      if (!entry) {
+        entry = { items: [], seenIds: new Set(), hasMore: true, generation: cache.generation };
+        cache.set(key, entry);
       }
+      while (entry.items.length < endIdx && entry.hasMore) {
+        await fetchNext(key, params, entry);
+        if (cache.generation !== entry.generation || cache.get(key) !== entry) break;
+      }
+      if (cache.generation === entry.generation && cache.get(key) === entry) break;
     }
 
     const items = entry.items.slice(startIdx, endIdx);
@@ -82,7 +93,7 @@ function createSearchService({ fetchBatch, cache = searchBufferCache, batchSize 
           hasNextPage,
           hasPrevPage: P > 1,
           buffered: entry.items.length,
-          ...(entry.hasMore ? {} : { total: entry.items.length, totalPages: Math.max(1, Math.ceil(entry.items.length / L)) }),
+          ...(entry.hasMore ? {} : { total: entry.items.length, totalPages: Math.ceil(entry.items.length / L) }),
         },
       },
     };

@@ -56,3 +56,38 @@ test('edge forwards a non-JSON origin response without caching it', async (t) =>
   assert.equal(await result.text(), 'temporarily unavailable');
   assert.equal(f.puts.length, 0);
 });
+
+test('edge marks hits as cached even for older sessionless entries', async (t) => {
+  const f = fixture(t, {}, new Response(JSON.stringify({ data: [], hasMore: false })));
+  const { default: worker } = await loadWorker();
+  const result = await worker.fetch(new Request('https://edge.test/api/search?q=dragon'), { ORIGIN: 'https://origin.test/' }, f.ctx);
+  assert.equal((await result.json()).fromCache, true);
+  assert.equal(result.headers.get('X-Cache'), 'HIT');
+  assert.equal(f.fetches(), 0);
+});
+
+test('edge marks fresh origin results as misses and normalizes the origin slash', async (t) => {
+  const f = fixture(t, {});
+  const urls = [];
+  t.mock.method(globalThis, 'fetch', async (input) => {
+    urls.push(typeof input === 'string' ? input : input.url);
+    return new Response(JSON.stringify({ data: [], sessionId: 'private', hasMore: false }));
+  });
+  const { default: worker } = await loadWorker();
+  const result = await worker.fetch(new Request('https://edge.test/api/search?q=dragon'), { ORIGIN: 'https://origin.test/' }, f.ctx);
+  assert.equal((await result.json()).fromCache, false);
+  assert.equal(urls[0], 'https://origin.test/api/search?q=dragon');
+  await worker.fetch(new Request('https://edge.test/api/search?sessionId=private'), { ORIGIN: 'https://origin.test/' }, f.ctx);
+  assert.equal(urls[1], 'https://origin.test/api/search?sessionId=private');
+  await Promise.all(f.tasks);
+});
+
+test('edge cache failures fall back to the origin and leave responses usable', async (t) => {
+  const f = fixture(t, { data: [], hasMore: false });
+  t.mock.method(globalThis.caches.default, 'match', async () => { throw new Error('cache unavailable'); });
+  t.mock.method(globalThis.caches.default, 'put', async () => { throw new Error('cache unavailable'); });
+  const { default: worker } = await loadWorker();
+  const result = await worker.fetch(new Request('https://edge.test/api/search?q=dragon'), { ORIGIN: 'https://origin.test' }, f.ctx);
+  assert.deepEqual((await result.json()).data, []);
+  await Promise.all(f.tasks);
+});

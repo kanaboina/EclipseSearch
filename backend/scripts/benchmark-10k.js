@@ -3,6 +3,7 @@
  * Measures high-precision timing, averages, maximums, percentiles (P50, P95, P99),
  * and throughput across all core functions in EclipseSearchVersionTwo.
  */
+const { neighborIndex } = require('../src/services/neighborIndex');
 const { performance } = require('node:perf_hooks');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -61,17 +62,20 @@ const {
 } = require('../src/services/aiGraphService');
 
 /** High precision benchmark runner using process.hrtime.bigint() */
-function measure(name, category, fn, { warmup = 10, iterations = 100 } = {}) {
+async function measure(name, category, fn, { warmup = 10, iterations = 100 } = {}) {
+  if (!Number.isInteger(warmup) || warmup < 0 || !Number.isInteger(iterations) || iterations < 1) {
+    throw new RangeError('warmup must be nonnegative and iterations must be positive integers');
+  }
   // Warmup phase to trigger JIT optimization
   for (let i = 0; i < warmup; i++) {
-    fn();
+    await fn();
   }
 
   // Measurement phase
   const latencies = new Float64Array(iterations);
   for (let i = 0; i < iterations; i++) {
     const start = process.hrtime.bigint();
-    fn();
+    await fn();
     const end = process.hrtime.bigint();
     latencies[i] = Number(end - start) / 1e6; // Convert nanoseconds to milliseconds
   }
@@ -113,7 +117,7 @@ function measure(name, category, fn, { warmup = 10, iterations = 100 } = {}) {
   };
 }
 
-async function runBenchmark() {
+async function runBenchmark({ outputPath = path.join(__dirname, '..', 'test-metrics-10k.json') } = {}) {
   console.log('='.repeat(80));
   console.log('   ECLIPSE FANTASY SEARCH ENGINE: 10K-WORD SEARCH SPACE BENCHMARK');
   console.log('='.repeat(80));
@@ -139,31 +143,31 @@ async function runBenchmark() {
   // Group 1: NLP & Text Normalization
   // ==========================================
   console.log('[Phase 2] Benchmarking NLP & Text Normalization Functions...');
-  results.push(measure('singularize (regular plural - dragons)', 'NLP', () => {
+  results.push(await measure('singularize (regular plural - dragons)', 'NLP', () => {
     singularize('dragons');
   }, { iterations: 200 }));
 
-  results.push(measure('singularize (irregular -ies - fairies)', 'NLP', () => {
+  results.push(await measure('singularize (irregular -ies - fairies)', 'NLP', () => {
     singularize('fairies');
   }, { iterations: 200 }));
 
-  results.push(measure('singularize (irregular -ches - witches)', 'NLP', () => {
+  results.push(await measure('singularize (irregular -ches - witches)', 'NLP', () => {
     singularize('witches');
   }, { iterations: 200 }));
 
-  results.push(measure('singularize (non-singular -ss - abyss)', 'NLP', () => {
+  results.push(await measure('singularize (non-singular -ss - abyss)', 'NLP', () => {
     singularize('abyss');
   }, { iterations: 200 }));
 
-  results.push(measure('singularize (short/num - 4k)', 'NLP', () => {
+  results.push(await measure('singularize (short/num - 4k)', 'NLP', () => {
     singularize('4k');
   }, { iterations: 200 }));
 
-  results.push(measure('normalizeToken (clean token)', 'NLP', () => {
+  results.push(await measure('normalizeToken (clean token)', 'NLP', () => {
     normalizeToken('CyberpunkKnight');
   }, { iterations: 1000 }));
 
-  results.push(measure('normalizeToken (noisy symbols/emoji)', 'NLP', () => {
+  results.push(await measure('normalizeToken (noisy symbols/emoji)', 'NLP', () => {
     normalizeToken('  #Cyber_Knight-8K!! ⚔️  ');
   }, { iterations: 1000 }));
 
@@ -174,7 +178,7 @@ async function runBenchmark() {
     tags: ['dragon', 'fantasy', 'castle', 'night', 'flame', '4k', 'knight', 'epic'],
   };
 
-  results.push(measure('extractCleanWords (standard wallpaper doc)', 'NLP', () => {
+  results.push(await measure('extractCleanWords (standard wallpaper doc)', 'NLP', () => {
     extractCleanWords(sampleWallpaperStandard);
   }, { iterations: 100 }));
 
@@ -185,19 +189,19 @@ async function runBenchmark() {
     tags: ['cyberpunk', 'neo-tokyo', 'samurai', 'neon', 'rain', 'cyborg', 'futuristic', 'dark', 'city', 'night', 'blade', 'hologram', 'anime'],
   };
 
-  results.push(measure('extractCleanWords (dense wallpaper doc)', 'NLP', () => {
+  results.push(await measure('extractCleanWords (dense wallpaper doc)', 'NLP', () => {
     extractCleanWords(sampleWallpaperDense);
   }, { iterations: 100 }));
 
-  results.push(measure('analyzeQuery (1-word entity: dragon)', 'NLP', () => {
+  results.push(await measure('analyzeQuery (1-word entity: dragon)', 'NLP', () => {
     analyzeQuery('dragon');
   }, { iterations: 100 }));
 
-  results.push(measure('analyzeQuery (3-word query: dark dragon castle)', 'NLP', () => {
+  results.push(await measure('analyzeQuery (3-word query: dark dragon castle)', 'NLP', () => {
     analyzeQuery('dark dragon castle');
   }, { iterations: 100 }));
 
-  results.push(measure('analyzeQuery (6-word noisy query with stopwords)', 'NLP', () => {
+  results.push(await measure('analyzeQuery (6-word noisy query with stopwords)', 'NLP', () => {
     analyzeQuery('the ancient dark dragon near a burning castle wallpaper 4k');
   }, { iterations: 100 }));
 
@@ -206,7 +210,7 @@ async function runBenchmark() {
   // ==========================================
   console.log('[Phase 3] Benchmarking Memory Graph Operations (10k Nodes)...');
 
-  results.push(measure('rebuildGraph (hydrate all 10,000 nodes)', 'MemoryGraph', () => {
+  results.push(await measure('rebuildGraph (hydrate all 10,000 nodes)', 'MemoryGraph', () => {
     const tempGraph = new Map();
     rebuildGraph(tempGraph, nodes10k);
   }, { warmup: 3, iterations: 25 }));
@@ -219,15 +223,15 @@ async function runBenchmark() {
     { target: 'darkness', weight: 5, relation: 'mood' },
   ];
 
-  results.push(measure('addEdges (insert 5 edges into 10k graph)', 'MemoryGraph', () => {
+  results.push(await measure('addEdges (insert 5 edges into 10k graph)', 'MemoryGraph', () => {
     addEdges(graph10k, 'shadowwyrm', newClusterEdges);
   }, { iterations: 500 }));
 
-  results.push(measure('directedWeights (hyponym forward/reverse)', 'MemoryGraph', () => {
+  results.push(await measure('directedWeights (hyponym forward/reverse)', 'MemoryGraph', () => {
     directedWeights('hyponym', 2);
   }, { iterations: 1000 }));
 
-  results.push(measure('directedWeights (symmetric weight)', 'MemoryGraph', () => {
+  results.push(await measure('directedWeights (symmetric weight)', 'MemoryGraph', () => {
     directedWeights('synonym', 1);
   }, { iterations: 1000 }));
 
@@ -236,43 +240,44 @@ async function runBenchmark() {
   // ==========================================
   console.log('[Phase 4] Benchmarking Dijkstra & LCS Traversal Across 10k Search Space...');
 
-  results.push(measure('Dijkstra Dial (hub node degree ~40: dragon)', 'Dijkstra', () => {
+  results.push(await measure(`Bounded traversal (dragon, degree ${graph10k.get('dragon').size})`, 'Dijkstra', () => {
     singleSourceBoundedDijkstra(graph10k, 'dragon');
   }, { iterations: 200 }));
 
-  results.push(measure('Dijkstra Dial (mid node degree ~12: starblade)', 'Dijkstra', () => {
+  results.push(await measure(`Bounded traversal (starblade, degree ${graph10k.get('starblade').size})`, 'Dijkstra', () => {
     singleSourceBoundedDijkstra(graph10k, 'starblade');
   }, { iterations: 500 }));
 
-  results.push(measure('Dijkstra Dial (leaf node degree ~3: term9990)', 'Dijkstra', () => {
-    singleSourceBoundedDijkstra(graph10k, 'term9990');
+  const [leafWord, leafNeighbors] = [...graph10k].reduce((a, b) => b[1].size < a[1].size ? b : a);
+  results.push(await measure(`Bounded traversal (${leafWord}, degree ${leafNeighbors.size})`, 'Dijkstra', () => {
+    singleSourceBoundedDijkstra(graph10k, leafWord);
   }, { iterations: 500 }));
 
-  results.push(measure('findClosestWordByNormalizedLCS (1-char typo: dragn)', 'LCS', () => {
+  results.push(await measure('findClosestWordByNormalizedLCS (cached typo: dragn)', 'LCS', () => {
     findClosestWordByNormalizedLCS('dragn', graph10k);
   }, { iterations: 50 }));
 
-  results.push(measure('findClosestWordByNormalizedLCS (moderate typo: castlee)', 'LCS', () => {
+  results.push(await measure('findClosestWordByNormalizedLCS (cached typo: castlee)', 'LCS', () => {
     findClosestWordByNormalizedLCS('castlee', graph10k);
   }, { iterations: 50 }));
 
-  results.push(measure('findClosestWordByNormalizedLCS (miss full 10k scan: zzzzzzzz)', 'LCS', () => {
+  results.push(await measure('findClosestWordByNormalizedLCS (cached miss: zzzzzzzz)', 'LCS', () => {
     findClosestWordByNormalizedLCS('zzzzzzzz', graph10k);
   }, { iterations: 30 }));
 
-  results.push(measure('expandQuerySemantically (1-word exact: dragon)', 'Expansion', () => {
+  results.push(await measure('expandQuerySemantically (1-word exact: dragon)', 'Expansion', () => {
     expandQuerySemantically('dragon', graph10k);
   }, { iterations: 50 }));
 
-  results.push(measure('expandQuerySemantically (3-word multi-source: dragon knight castle)', 'Expansion', () => {
+  results.push(await measure('expandQuerySemantically (3-word multi-source: dragon knight castle)', 'Expansion', () => {
     expandQuerySemantically('dragon knight castle', graph10k);
   }, { iterations: 50 }));
 
-  results.push(measure('expandQuerySemantically (typo + exact: dragn knight)', 'Expansion', () => {
+  results.push(await measure('expandQuerySemantically (typo + exact: dragn knight)', 'Expansion', () => {
     expandQuerySemantically('dragn knight', graph10k);
   }, { iterations: 30 }));
 
-  results.push(measure('boostFor (cost-to-boost curve)', 'Ranking', () => {
+  results.push(await measure('boostFor (cost-to-boost curve)', 'Ranking', () => {
     boostFor(3);
   }, { iterations: 1000 }));
 
@@ -281,9 +286,10 @@ async function runBenchmark() {
   // ==========================================
   console.log('[Phase 5] Benchmarking Search Pipeline Assembly...');
 
+  neighborIndex.build(graph10k);
   const precomputedExpansion = expandQuerySemantically('dragon knight castle', graph10k);
 
-  results.push(measure('buildAtlasPipeline (with precomputed expansion)', 'Ranking', () => {
+  results.push(await measure('buildAtlasPipeline (with precomputed expansion)', 'Ranking', () => {
     buildAtlasPipeline({
       q: 'dragon knight castle',
       deviceType: 'desktop',
@@ -293,7 +299,7 @@ async function runBenchmark() {
     });
   }, { iterations: 500 }));
 
-  results.push(measure('buildAtlasPipeline (end-to-end with inline 10k expansion)', 'Ranking', () => {
+  results.push(await measure('buildAtlasPipeline (with 10k precomputed neighbor index)', 'Ranking', () => {
     buildAtlasPipeline({
       q: 'dragon knight castle',
       deviceType: 'desktop',
@@ -301,7 +307,7 @@ async function runBenchmark() {
     });
   }, { iterations: 30 }));
 
-  results.push(measure('buildTextFallbackQuery', 'Ranking', () => {
+  results.push(await measure('buildTextFallbackQuery', 'Ranking', () => {
     buildTextFallbackQuery({
       q: 'dragon knight castle',
       deviceType: 'phone',
@@ -309,7 +315,7 @@ async function runBenchmark() {
     });
   }, { iterations: 1000 }));
 
-  results.push(measure('publicVisibilityFilter', 'Utils', () => {
+  results.push(await measure('publicVisibilityFilter', 'Utils', () => {
     publicVisibilityFilter();
   }, { iterations: 1000 }));
 
@@ -325,20 +331,20 @@ async function runBenchmark() {
     views: 100 + i,
   }));
 
-  results.push(measure('SearchBufferCache.set', 'Cache', () => {
+  results.push(await measure('SearchBufferCache.set', 'Cache', () => {
     testCache.set('query:desktop', { items: sampleItems, seenIds: new Set(), hasMore: true });
   }, { iterations: 1000 }));
 
-  results.push(measure('SearchBufferCache.get (hit)', 'Cache', () => {
+  results.push(await measure('SearchBufferCache.get (hit)', 'Cache', () => {
     testCache.get('query:desktop');
   }, { iterations: 1000 }));
 
-  results.push(measure('SearchBufferCache.get (miss)', 'Cache', () => {
+  results.push(await measure('SearchBufferCache.get (miss)', 'Cache', () => {
     testCache.get('nonexistent:query');
   }, { iterations: 1000 }));
 
   let evictCount = 0;
-  results.push(measure('SearchBufferCache.set under eviction pressure (>200 keys)', 'Cache', () => {
+  results.push(await measure('SearchBufferCache.set under eviction pressure (>200 keys)', 'Cache', () => {
     testCache.set(`key_${evictCount++}`, { items: [] });
   }, { iterations: 500 }));
 
@@ -373,7 +379,7 @@ async function runBenchmark() {
     downloadBucket: 'private-r2',
   };
 
-  results.push(measure('wallpaperCardDTO (single card)', 'DTO', () => {
+  results.push(await measure('wallpaperCardDTO (single card)', 'DTO', () => {
     wallpaperCardDTO(rawWallpaperDoc);
   }, { iterations: 1000 }));
 
@@ -383,7 +389,7 @@ async function runBenchmark() {
     title: `Card ${i}`,
   }));
 
-  results.push(measure('wallpaperCardDTO (batch 50 cards mapping)', 'DTO', () => {
+  results.push(await measure('wallpaperCardDTO (batch 50 cards mapping)', 'DTO', () => {
     for (let i = 0; i < 50; i++) {
       wallpaperCardDTO(batchRawDocs[i]);
     }
@@ -407,19 +413,19 @@ async function runBenchmark() {
 
   // Cold search (triggers DB fetch + cache set)
   let coldQueryIndex = 0;
-  results.push(measure('searchService.search (cold query - cache miss)', 'Service', () => {
-    service.search({ q: `query_${coldQueryIndex++}`, page: 1, limit: 20 });
+  results.push(await measure('searchService.search (cold query - cache miss)', 'Service', () => {
+    return service.search({ q: `query_${coldQueryIndex++}`, page: 1, limit: 20 });
   }, { iterations: 100 }));
 
   // Warm search (cache hit)
-  service.search({ q: 'warm_query', page: 1, limit: 20 });
-  results.push(measure('searchService.search (warm query - cache hit)', 'Service', () => {
-    service.search({ q: 'warm_query', page: 1, limit: 20 });
+  await service.search({ q: 'warm_query', page: 1, limit: 20 });
+  results.push(await measure('searchService.search (warm query - cache hit)', 'Service', () => {
+    return service.search({ q: 'warm_query', page: 1, limit: 20 });
   }, { iterations: 500 }));
 
   // Page 2 buffered search
-  results.push(measure('searchService.search (page 2 - buffered slice)', 'Service', () => {
-    service.search({ q: 'warm_query', page: 2, limit: 20 });
+  results.push(await measure('searchService.search (page 2 - buffered slice)', 'Service', () => {
+    return service.search({ q: 'warm_query', page: 2, limit: 20 });
   }, { iterations: 500 }));
 
   // ==========================================
@@ -430,24 +436,24 @@ async function runBenchmark() {
   const sampleLlmPayload = {
     expansions: {
       dragon: Array.from({ length: 25 }, (_, i) => ({
-        target: `beast_${i}`,
+        target: `beast${i}`,
         weight: (i % 6) + 1,
         relation: 'synonym',
       })),
       knight: Array.from({ length: 25 }, (_, i) => ({
-        target: `warrior_${i}`,
+        target: `warrior${i}`,
         weight: (i % 6) + 1,
         relation: 'hyponym',
       })),
       castle: Array.from({ length: 25 }, (_, i) => ({
-        target: `fortress_${i}`,
+        target: `fortress${i}`,
         weight: (i % 6) + 1,
         relation: 'hypernym',
       })),
     },
   };
 
-  results.push(measure('sanitizeExpansions (3 words x 25 raw edges)', 'Ingestion', () => {
+  results.push(await measure('sanitizeExpansions (3 words x 25 raw edges)', 'Ingestion', () => {
     sanitizeExpansions(sampleLlmPayload, ['dragon', 'knight', 'castle']);
   }, { iterations: 500 }));
 
@@ -463,8 +469,8 @@ async function runBenchmark() {
     }),
   };
 
-  results.push(measure('findUnseenWords (filter 50 words vs 10k database)', 'Ingestion', () => {
-    findUnseenWords(sampleWordsFilter, mockModel);
+  results.push(await measure('findUnseenWords (filter 50 words vs 10k database)', 'Ingestion', () => {
+    return findUnseenWords(sampleWordsFilter, mockModel);
   }, { iterations: 200 }));
 
   // ==========================================
@@ -506,7 +512,6 @@ async function runBenchmark() {
   console.log('='.repeat(110));
 
   // Save JSON report for programmatic analysis
-  const outputPath = path.join(__dirname, '..', 'test-metrics-10k.json');
   const reportPayload = {
     timestamp: new Date().toISOString(),
     environment: {
@@ -515,7 +520,7 @@ async function runBenchmark() {
       arch: process.arch,
       searchSpaceSize: words10k.length,
       graphNodes: graph10k.size,
-      graphAdjacencyEntries: totalAdjacencyEntries,
+      graphAdjacencyEntries: [...graph10k.values()].reduce((sum, neighbors) => sum + neighbors.size, 0),
     },
     metrics: results,
   };
@@ -526,7 +531,7 @@ async function runBenchmark() {
 }
 
 if (require.main === module) {
-  runBenchmark().catch((err) => {
+  runBenchmark({ outputPath: process.env.BENCHMARK_OUTPUT }).catch((err) => {
     console.error('Benchmark failed:', err);
     process.exit(1);
   });

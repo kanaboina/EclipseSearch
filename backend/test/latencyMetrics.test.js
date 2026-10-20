@@ -6,7 +6,7 @@ const { singleSourceBoundedDijkstra, findClosestWordByNormalizedLCS, expandQuery
 const { rebuildGraph } = require('../src/services/memoryGraph');
 const { SearchBufferCache } = require('../src/services/searchBufferCache');
 const { wallpaperCardDTO } = require('../src/utils/wallpaperDTO');
-const { analyzeQuery, singularize } = require('../src/services/semanticDijkstra');
+const { analyzeQuery } = require('../src/services/semanticDijkstra');
 
 // Initialize shared 10k search space
 const words10k = generate10kWords();

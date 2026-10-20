@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { onWallpaperVisibilityChanged } = require('../src/services/searchLifecycle');
 const { searchBufferCache } = require('../src/services/searchBufferCache');
 const { generate10kWords, generate10kNodes, buildPopulatedGraph, BASE_WORDS } = require('../scripts/datasetGenerator');
-const { expandQuerySemantically, analyzeQuery, charMask, popcount, lcsLength } = require('../src/services/semanticDijkstra');
+const { expandQuerySemantically, analyzeQuery, charMask, popcount } = require('../src/services/semanticDijkstra');
 const { addEdges } = require('../src/services/memoryGraph');
 const { normalizeTokenStrict } = require('../src/services/textNlp');
 

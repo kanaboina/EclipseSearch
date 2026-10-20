@@ -10,10 +10,10 @@ const backoffMs = (attempts) => Math.min(60, 2 ** attempts) * 60 * 1000;
 /**
  * Background worker: restores AI-queued drafts once expansion succeeds.
  * deps: { Wallpaper, Job, expand, revalidate }
- * Note: wallpaper.status enum is draft|published; 'scheduled' is published with a
- * future publishAt, so desiredStatus 'scheduled' also maps to 'published'.
  */
-function createDraftRetryWorker({ Wallpaper, Job = AiIngestionJob, expand = expandWords, revalidate = async () => {}, now = () => new Date() } = {}) {
+function createDraftRetryWorker({ Wallpaper, Job = AiIngestionJob, expand = expandWords, revalidate = async () => {}, now = () => new Date(), batchSize = 10 } = {}) {
+  if (!Number.isInteger(batchSize) || batchSize < 1) throw new RangeError('batchSize must be a positive integer');
+  let stopped = false;
   let timer = null;
   let running = false;
 
@@ -26,8 +26,6 @@ function createDraftRetryWorker({ Wallpaper, Job = AiIngestionJob, expand = expa
   }
 
   async function claim() {
-    // First recover any stale processing jobs
-    await recoverStaleJobs();
     return Job.findOneAndUpdate(
       { state: 'pending', nextRetryAt: { $lte: now() } },
       { $set: { state: 'processing' } },
@@ -43,7 +41,7 @@ function createDraftRetryWorker({ Wallpaper, Job = AiIngestionJob, expand = expa
         remaining = result.missing;
         throw new Error(`Missing expansions for: ${remaining.join(', ')}`);
       }
-      await Wallpaper.updateOne({ _id: job.wallpaperId, status: 'draft' }, { $set: { status: 'published' } });
+      await Wallpaper.updateOne({ _id: job.wallpaperId, status: 'draft' }, { $set: { status: job.desiredStatus === 'scheduled' ? 'scheduled' : 'published' } });
       await Job.updateOne({ _id: job._id }, { $set: { state: 'completed', lastError: null } });
       invalidateSearchCache();
       try { await revalidate(job.wallpaperId); } catch (_) { /* best effort */ }
@@ -72,7 +70,10 @@ function createDraftRetryWorker({ Wallpaper, Job = AiIngestionJob, expand = expa
     running = true;
     let n = 0;
     try {
-      for (let job = await claim(); job; job = await claim()) {
+      await recoverStaleJobs();
+      while (n < batchSize && !stopped) {
+        const job = await claim();
+        if (!job) break;
         await processJob(job);
         n++;
       }
@@ -85,8 +86,8 @@ function createDraftRetryWorker({ Wallpaper, Job = AiIngestionJob, expand = expa
   return {
     tick,
     processJob,
-    start() { if (!timer) { timer = setInterval(() => tick().catch(() => {}), POLL_MS); timer.unref?.(); } },
-    stop() { clearInterval(timer); timer = null; },
+    start() { stopped = false; if (!timer) { timer = setInterval(() => tick().catch(() => {}), POLL_MS); timer.unref?.(); } },
+    stop() { stopped = true; clearInterval(timer); timer = null; },
   };
 }
 

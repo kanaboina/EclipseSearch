@@ -6,7 +6,9 @@ const { normalizeToken } = require('./textNlp');
 const PRIMARY = { title: 10, tags: 8, categoryName: 7 };
 
 function toObjectIds(ids) {
-  return ids.map((id) => new mongoose.Types.ObjectId(String(id)));
+  // Synthetic/non-Mongo IDs cannot match an ObjectId collection. Ignore them.
+  return ids.map(String).filter((id) => /^[a-f0-9]{24}$/i.test(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
 }
 
 /**

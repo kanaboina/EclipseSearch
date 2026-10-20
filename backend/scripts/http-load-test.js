@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const autocannon = require('autocannon');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -80,7 +81,14 @@ function buildRealisticRequests(sessionIds = []) {
     });
   }
 
-  return requests;
+  // Weight request templates explicitly instead of assuming their counts give
+  // the documented traffic mix.
+  const hot = requests.slice(0, HOT_QUERIES.length * 2);
+  const tail = requests.slice(hot.length, hot.length + LONG_TAIL_QUERIES.length);
+  const typo = requests.slice(hot.length + tail.length, hot.length + tail.length + TYPO_QUERIES.length);
+  const pages = requests.slice(hot.length + tail.length + typo.length);
+  const repeat = (group, count) => group.length ? Array.from({ length: count }, (_, i) => group[i % group.length]) : [];
+  return [...repeat(hot, 60), ...repeat(tail, 25), ...repeat(typo, 5), ...repeat(pages, 10)];
 }
 
 async function primeInitialSessions(baseUrl) {
@@ -138,7 +146,7 @@ function formatResultSummary(scenarioName, res) {
   const lat = res.latency;
   const req = res.requests;
   const throughput = res.throughput;
-  const p95 = typeof lat.p95 === 'number' ? lat.p95 : Number(((lat.p90 + lat.p97_5) / 2).toFixed(2));
+  const p95 = typeof lat.p95 === 'number' ? lat.p95 : null;
 
   return {
     scenario: scenarioName,
@@ -172,20 +180,28 @@ function formatResultSummary(scenarioName, res) {
 async function main() {
   let serverInstance = null;
   let isInternalServer = false;
+  let atlasLive;
 
   // Check if target server is already running
   try {
     const probe = await fetch(`${BASE_URL}/health`);
+    if (!probe.ok) throw new Error(`Health check returned HTTP ${probe.status}`);
     if (probe.ok) {
       const info = await probe.json();
+      atlasLive = info.atlasLive;
       console.log(`[LoadTest] Connected to existing server at ${BASE_URL} (Atlas Live: ${info.atlasLive})`);
     }
-  } catch (_) {
+  } catch (error) {
+    if (process.env.TARGET_URL) throw new Error(`Target health check failed: ${error.message}`);
     // Start local search server
     console.log(`[LoadTest] Spawning test HTTP server on port ${TEST_PORT}...`);
     const engine = await setupSearchEngine();
     serverInstance = createSearchHttpServer(engine);
-    await new Promise((resolve) => serverInstance.listen(TEST_PORT, '127.0.0.1', resolve));
+    await new Promise((resolve, reject) => {
+      serverInstance.once('error', reject);
+      serverInstance.listen(TEST_PORT, '127.0.0.1', resolve);
+    });
+    atlasLive = engine.isAtlasLive;
     isInternalServer = true;
     console.log(`[LoadTest] Internal HTTP server ready at ${BASE_URL}`);
   }
@@ -247,7 +263,8 @@ async function main() {
     const fullReport = {
       timestamp: new Date().toISOString(),
       targetUrl: BASE_URL,
-      catalogSize: 10000,
+      atlasLive,
+      catalogSize: atlasLive === false ? 10000 : null,
       nodeVersion: process.version,
       platform: process.platform,
       arch: process.arch,
@@ -261,7 +278,7 @@ async function main() {
     console.log('                                HTTP LOAD TEST SUMMARY & PERCENTILES                                     ');
     console.log('========================================================================================================');
     console.log(
-      ['Scenario'.padEnd(32), 'Req/s'.padStart(9), 'Avg'.padStart(9), 'P50'.padStart(9), 'P95'.padStart(9), 'P99'.padStart(9), 'Max'.padStart(9), 'Errors'.padStart(8)].join(' | ')
+      ['Scenario'.padEnd(32), 'Req/s'.padStart(9), 'Avg'.padStart(9), 'P50'.padStart(9), 'P97.5'.padStart(9), 'P99'.padStart(9), 'Max'.padStart(9), 'Errors'.padStart(8)].join(' | ')
     );
     console.log('--------------------------------------------------------------------------------------------------------');
     for (const s of reportSummaries) {
@@ -271,7 +288,7 @@ async function main() {
           Math.round(s.requestsPerSec).toString().padStart(9),
           `${s.latency.averageMs}ms`.padStart(9),
           `${s.latency.p50Ms}ms`.padStart(9),
-          `${s.latency.p95Ms}ms`.padStart(9),
+          `${s.latency.p97_5Ms}ms`.padStart(9),
           `${s.latency.p99Ms}ms`.padStart(9),
           `${s.latency.maxMs}ms`.padStart(9),
           s.statusCodes.errors.toString().padStart(8),
@@ -281,7 +298,8 @@ async function main() {
     console.log('========================================================================================================\n');
   } finally {
     if (serverInstance && isInternalServer) {
-      serverInstance.close();
+      await new Promise((resolve, reject) => serverInstance.close((error) => error ? reject(error) : resolve()));
+      if (atlasLive) await mongoose.disconnect();
     }
   }
 }
@@ -293,4 +311,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main };
+module.exports = { main, buildRealisticRequests, formatResultSummary };

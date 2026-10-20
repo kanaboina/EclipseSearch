@@ -78,7 +78,12 @@ function createSearchHttpServer(engine) {
   const MAX_TOKENS = 20;
 
   const server = http.createServer(async (req, res) => {
-    const parsed = new URL(req.url, 'http://localhost');
+    let parsed;
+    try { parsed = new URL(req.url, 'http://localhost'); } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request URL' }));
+      return;
+    }
     const pathname = parsed.pathname;
 
     // Set JSON headers
@@ -123,13 +128,14 @@ function createSearchHttpServer(engine) {
         const result = await progressiveSearch.search({
           q,
           sessionId,
+          ...(parsed.searchParams.has('page') ? { page } : {}),
           limit,
           deviceType,
         });
 
         // Calculate pagination metadata
         const totalResults = result.hasMore ? 'unknown' : result.total;
-        const totalPages = totalResults === 'unknown' ? 'unknown' : Math.max(1, Math.ceil(totalResults / limit));
+        const totalPages = totalResults === 'unknown' ? 'unknown' : Math.ceil(totalResults / limit);
 
         res.writeHead(200);
         res.end(JSON.stringify({
@@ -137,7 +143,7 @@ function createSearchHttpServer(engine) {
           sessionId: result.sessionId,
           hasMore: result.hasMore,
           meta: {
-            page,
+            page: result.page ?? page,
             limit,
             count: result.data.length,
             total: totalResults,
@@ -145,9 +151,10 @@ function createSearchHttpServer(engine) {
           },
         }));
       } catch (err) {
-        console.error('[Server] Search error:', err);
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: 'Internal server error' }));
+        const status = [400, 410].includes(err.statusCode) ? err.statusCode : 500;
+        if (status === 500) console.error('[Server] Search error:', err);
+        res.writeHead(status);
+        res.end(JSON.stringify({ error: status === 500 ? 'Internal server error' : err.message }));
       }
       return;
     }

@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const edgeSchema = new mongoose.Schema(
   {
     target: { type: String, required: true, lowercase: true, trim: true },
-    weight: { type: Number, required: true, min: 0, max: 6 },
+    weight: { type: Number, required: true, min: 1, max: 6, validate: Number.isInteger },
     // identity | synonym | hyponym | hypernym | sibling | scene | mood | tangent
     relation: { type: String, default: 'synonym' },
   },

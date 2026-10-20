@@ -123,4 +123,8 @@ async function runLadder() {
   console.log(`\nAll 20 tests completed successfully! Results written to ${outPath}`);
 }
 
-runLadder().catch(console.error);
+if (require.main === module) {
+  runLadder().catch((err) => { console.error(err); process.exitCode = 1; });
+}
+
+module.exports = { runLadder };
