@@ -31,6 +31,7 @@ function buildAtlasPipeline({ q, deviceType, limit = 50, excludeIds = [], now = 
   }
   const support = [];
   for (const { term, boost } of terms) {
+    // Semantic primary matches must also qualify documents for retrieval.
     for (const [path, base] of Object.entries(PRIMARY)) {
       primary.push({ text: { query: term, path, score: { boost: { value: Math.max(0.01, boost * (base / 10)) } } } });
     }
@@ -70,10 +71,10 @@ function buildTextFallbackQuery({ q, deviceType, excludeIds = [], now = new Date
  * Fetch one internal batch. Atlas first; $text fallback if Atlas errors
  * (e.g. SearchNotEnabled) or returns 0 results on the first batch.
  */
-async function fetchSearchBatch(Wallpaper, { q, deviceType, limit = 50, excludeIds = [], now = new Date() }) {
+async function fetchSearchBatch(Wallpaper, { q, deviceType, limit = 50, excludeIds = [], now = new Date(), expansion } = {}) {
   const first = excludeIds.length === 0;
   try {
-    const rows = await Wallpaper.aggregate(buildAtlasPipeline({ q, deviceType, limit, excludeIds, now }));
+    const rows = await Wallpaper.aggregate(buildAtlasPipeline({ q, deviceType, limit, excludeIds, now, expansion }));
     if (rows.length || !first) return rows;
   } catch (_) { /* fall through to $text */ }
   const filter = buildTextFallbackQuery({ q, deviceType, excludeIds, now });

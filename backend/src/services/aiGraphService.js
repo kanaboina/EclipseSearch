@@ -118,31 +118,40 @@ function sanitizeExpansions(parsed, words) {
   return result;
 }
 
-/** Try each provider in order; returns sanitized expansions for ALL words or throws. */
+/** Try each provider in order; returns sanitized expansions (may be partial). */
 async function callLlmWithFallback(words, providers = defaultProviders()) {
   if (!providers.length) throw new Error('No AI providers configured');
-  const prompt = buildPrompt(words);
+  const expansions = {};
+  let missing = words;
+  let responded = false;
   const errors = [];
   for (const p of providers) {
     try {
-      const text = await p.call(prompt);
-      const out = sanitizeExpansions(JSON.parse(text), words);
-      const missing = words.filter((w) => !out[w]);
-      if (missing.length) throw new Error(`missing expansions: ${missing.join(',')}`);
-      return out;
+      const text = await p.call(buildPrompt(missing));
+      const out = sanitizeExpansions(JSON.parse(text), missing);
+      responded = true;
+      Object.assign(expansions, out);
+      missing = missing.filter((w) => !out[w]);
+      if (!missing.length) return { expansions, missing };
     } catch (err) {
       errors.push(`${p.name}: ${err.message}`);
     }
   }
+  if (responded) return { expansions, missing };
   throw new Error(errors.join(' | '));
 }
 
 /** Global dedupe: only words never expanded before. */
 async function findUnseenWords(words, Model = SemanticNode) {
   if (!words.length) return [];
-  const done = await Model.find({ word: { $in: words }, isExpanded: true }).select('word').lean();
-  const set = new Set(done.map((d) => d.word));
-  return words.filter((w) => !set.has(w));
+  const BATCH_SIZE = 10000; // MongoDB $in limit safety margin
+  const allDone = new Set();
+  for (let i = 0; i < words.length; i += BATCH_SIZE) {
+    const batch = words.slice(i, i + BATCH_SIZE);
+    const done = await Model.find({ word: { $in: batch }, isExpanded: true }).select('word').lean();
+    done.forEach((d) => allDone.add(d.word));
+  }
+  return words.filter((w) => !allDone.has(w));
 }
 
 /** Upsert edges (bulkWrite unordered) and hot-update the in-memory graph. */
@@ -162,10 +171,27 @@ async function persistExpansionsToGraph(expansions, { Model = SemanticNode, grap
 
 async function expandWords(words, deps = {}) {
   const unseen = await findUnseenWords(words, deps.Model);
-  if (!unseen.length) return { expanded: [], unseen: [] };
-  const expansions = await callLlmWithFallback(unseen, deps.providers);
-  await persistExpansionsToGraph(expansions, deps);
-  return { expanded: Object.keys(expansions), unseen };
+  if (!unseen.length) return { expanded: [], unseen: [], missing: [] };
+
+  let allExpanded = [];
+  let remaining = unseen;
+  const maxRetries = 3;
+
+  for (let attempt = 0; attempt < maxRetries && remaining.length; attempt++) {
+    const { expansions, missing } = await callLlmWithFallback(remaining, deps.providers);
+    const expanded = Object.keys(expansions);
+    if (expanded.length) {
+      await persistExpansionsToGraph(expansions, deps);
+      allExpanded.push(...expanded);
+    }
+    remaining = missing;
+    if (remaining.length && attempt < maxRetries - 1) {
+      // Small delay before retrying missing words
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
+
+  return { expanded: allExpanded, unseen, missing: remaining };
 }
 
 /**
@@ -209,13 +235,17 @@ async function linkWallpaperToGraph(docId, words, { Model = SemanticNode } = {})
 async function processWallpaperSemanticsOnUpload(payload, requestedStatus = 'published', deps = {}) {
   const words = extractCleanWords(payload);
   const wallpaperId = payload._id ? String(payload._id) : null;
-  let unseen = [];
   try {
     const res = await expandWords(words, deps);
     // Link the wallpaper's document ID to all its words in the inverted index.
     if (wallpaperId) await linkWallpaperToGraph(wallpaperId, words, deps);
+    // If some words couldn't be expanded, queue a draft job to retry later
+    if (res.missing && res.missing.length) {
+      return { status: 'draft', unprocessedWords: res.missing, error: `Missing expansions for: ${res.missing.join(', ')}` };
+    }
     return { status: requestedStatus, unprocessedWords: [], expanded: res.expanded };
   } catch (err) {
+    let unseen = [];
     try { unseen = await findUnseenWords(words, deps.Model); } catch (_) { unseen = words; }
     // Still link the doc so it appears in ID-based results (semantic expansion will be partial).
     if (wallpaperId) {

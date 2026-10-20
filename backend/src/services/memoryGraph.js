@@ -92,7 +92,6 @@ async function initMemoryGraph(SemanticNode = require('../models/SemanticNode'))
     }
   }
 
-  require('./neighborIndex').neighborIndex.build(memoryGraph); // precompute once at startup
   return memoryGraph.size;
 }
 

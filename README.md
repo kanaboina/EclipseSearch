@@ -10,7 +10,7 @@
 
 A deterministic semantic search engine and associative knowledge graph for fantasy, anime and artistic wallpaper catalogs.
 
-**Graph traversal happens only when the graph is written — never while serving a search.** Bounded Dijkstra runs at write time and its results go into a flat, `TypedArray`-backed top-K neighbor index. At query time, expanding a search is a set of array lookups. In-flight requests are coalesced (singleflight). Pagination reads from a per-session ranked pool, so it never re-queries the database.
+**Graph traversal happens only when the graph is written — never while serving a search.** Bounded Dijkstra runs at write time and its results go into a flat, `TypedArray`-backed top-K neighbor index. At query time, expanding a search is a set of array lookups. In-flight requests are coalesced (singleflight). Pagination preserves a per-session ranked pool. Live mode hydrates each page from MongoDB to recheck visibility; demo mode slices cached rows.
 
 > [!IMPORTANT]
 > **All performance figures in this document are origin-only.** They were measured **without the Cloudflare edge cache** ([`searchCacheWorker.js`](./backend/src/edge/searchCacheWorker.js)), without any CDN, Redis or other external cache layer, and on a single Node.js process. In production, cacheable public queries are answered at the edge before they reach the origin, so these numbers are a **worst-case floor** and not the expected steady state.
@@ -125,8 +125,12 @@ Request 1 (no sessionId)
 
 Request 2..N (with sessionId)
   -> advance cursor over the in-memory ranked pool, skip ids already in seenIds
-  -> return next 20, hasMore = cursor < ranked.length       (no DB round-trip)
+  -> return next 20, hasMore = cursor < ranked.length       (demo mode: no DB round-trip)
 ```
+
+In live mode, Atlas ranks the initial pool and the session stores document IDs.
+Each page hydrates its IDs from MongoDB, preserving rank and excluding wallpapers
+that have since become drafts, pending deletion, or scheduled for the future.
 
 ### 6. Write-path resilience — [`aiGraphService.js`](./backend/src/services/aiGraphService.js), [`draftRetryWorker.js`](./backend/src/workers/draftRetryWorker.js)
 
@@ -507,11 +511,15 @@ GROQ_API_KEY=your_groq_api_key
 OPENAI_API_KEY=your_openai_api_key
 ```
 
+Set these variables in the server process environment. Without `MONGODB_URI`, the
+server uses the generated demo catalog. With `MONGODB_URI`, database connection
+and semantic graph initialization must succeed before the server starts.
+
 ### Edge worker (optional, recommended for production)
 
 Deploy [`src/edge/searchCacheWorker.js`](./backend/src/edge/searchCacheWorker.js) as a Cloudflare Worker and set the `ORIGIN` environment variable to the backend URL. The worker:
 
-- caches only `GET /api/search` requests **without** a `sessionId`, since session pages are user-specific
+- caches complete `GET /api/search` result sets **without** a request `sessionId`; responses with more pages bypass caching and keep their private continuation session
 - normalises `q` by lower-casing, collapsing whitespace and sorting tokens, so equivalent queries share one entry
 - sets `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`
 

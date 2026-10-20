@@ -80,18 +80,13 @@ const boostFor = (cost) => Math.round((20 / (1 + cost)) * 100) / 100;
 const LCS_MAX_LEN = 63;
 const LCS_MIN_SIMILARITY = 0.55;
 const LCS_HIGH_SIMILARITY = 0.8;
-// Pre-allocated DP rows: no heap allocation per candidate.
-let lcsPrev = new Uint8Array(LCS_MAX_LEN + 1);
-let lcsCurr = new Uint8Array(LCS_MAX_LEN + 1);
 
-/** LCS length of a and b using two reusable Uint8Array rows. Both lengths must be <= 63. */
+/** LCS length of a and b using two Uint8Array rows allocated per call (race-condition safe). */
 function lcsLength(a, b) {
   const n = a.length;
   const m = b.length;
-  let prev = lcsPrev;
-  let curr = lcsCurr;
-  prev.fill(0, 0, m + 1);
-  curr.fill(0, 0, m + 1);
+  let prev = new Uint8Array(m + 1);
+  let curr = new Uint8Array(m + 1);
   for (let i = 1; i <= n; i++) {
     const ca = a.charCodeAt(i - 1);
     curr[0] = 0;

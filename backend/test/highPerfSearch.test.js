@@ -179,6 +179,5 @@ test('progressive search ID-first mode fetches docs per batch and dedupes', asyn
   assert.equal(new Set(allIds).size, allIds.length);
   assert.equal(allIds.length, 45);
   assert.equal(c.hasMore, false);
-  // fetchDocs is called once per batch (3 batches), NOT once for the whole pool
   assert.equal(fetchDocsCalls, 3);
 });
