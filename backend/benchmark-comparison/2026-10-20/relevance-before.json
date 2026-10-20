@@ -1,0 +1,609 @@
+{
+  "timestamp": "2026-10-20T14:09:03.473Z",
+  "mode": "mock-10k",
+  "k": 10,
+  "queryCount": 25,
+  "meanPrecision": 0.29600000000000004,
+  "meanMRR": 0.615,
+  "meanNDCG": 0.6390633261037931,
+  "queries": [
+    {
+      "query": "dragon",
+      "note": "core exact match",
+      "precision": 0.7,
+      "mrr": 1,
+      "ndcg": 0.9878316351280039,
+      "grades": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        2
+      ],
+      "topTitles": [
+        "Ordergleam Dragonshroud in zenithtear",
+        "Mysticdeep Mysticcry in dragonshroud",
+        "Dragonshroud Aurorafrost in titanblade",
+        "Technogate Knightdrift in dragon",
+        "Spiritdeep Dragon in blizzardshroud"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "samurai",
+      "note": "core exact match",
+      "precision": 0.5,
+      "mrr": 1,
+      "ndcg": 0.9444537180991301,
+      "grades": [
+        2,
+        1,
+        2,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Knightleaf Samurai in omniclaw",
+        "Infernalnode Bladestrike in demonedge",
+        "Ironshard Infinityhelm in samurai",
+        "Samurai Sunbloom in bloodfang",
+        "Aquacrown Technomark in bladesong"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "phoenix",
+      "note": "core exact match",
+      "precision": 0.3,
+      "mrr": 1,
+      "ndcg": 1,
+      "grades": [
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Silverthorn Vortexshard in phoenix",
+        "Phoenix Seabringer in dawnbane",
+        "Omnipeak Phoenix in phantomdeep",
+        "Electrorune Demonwing in silvervoid",
+        "Primalstone Arcanebloom in voidfang"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "cyberpunk",
+      "note": "core exact match + category/style",
+      "precision": 1,
+      "mrr": 1,
+      "ndcg": 1,
+      "grades": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "topTitles": [
+        "Shadowscale Electrostorm in hypermantle",
+        "Nightrider Divinetide in chronofire",
+        "Ironpulse Cyberpunk in quantumrunner",
+        "Cyberpunk Necrobreaker in abyssaldust",
+        "Aerohold Icesurge in divinemist"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "valkyrie",
+      "note": "core exact match",
+      "precision": 0.3,
+      "mrr": 1,
+      "ndcg": 1,
+      "grades": [
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Icestar Valkyrie in necrohaven",
+        "Aquarune Megawing in valkyrie",
+        "Valkyrie Skybeam in nightrider",
+        "Arcanestorm Echoguard in goldenvale",
+        "Bladegate Darkdrift in auroracry"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "dragon knight",
+      "note": "multi-token, both should match",
+      "precision": 0,
+      "mrr": 0,
+      "ndcg": 0,
+      "grades": [],
+      "topTitles": [],
+      "status": "WEAK",
+      "resultCount": 0
+    },
+    {
+      "query": "cyberpunk neon",
+      "note": "multi-token style+atmosphere",
+      "precision": 0,
+      "mrr": 0,
+      "ndcg": 0,
+      "grades": [],
+      "topTitles": [],
+      "status": "WEAK",
+      "resultCount": 0
+    },
+    {
+      "query": "samurai sunset",
+      "note": "multi-token character+scene",
+      "precision": 0.1,
+      "mrr": 1,
+      "ndcg": 1,
+      "grades": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Seafrost Bloodmoon in mooncrown",
+        "Primalrift Emeraldspark in bloodmoon",
+        "Bloodmoon Omnikeeper in dreamforge",
+        "Mysticleaf Thunderstone in nightclaw",
+        "Echostrike Cybergaze in astrowing"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "crystal cavern",
+      "note": "multi-token setting",
+      "precision": 0.1,
+      "mrr": 0.125,
+      "ndcg": 0.31546487678572877,
+      "grades": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Lightburst Duskgleam in ghost",
+        "Ghost Icepeak in hypervault",
+        "Ironsurge Ghost in nanogleam",
+        "Sun Omniforge in ghostrift",
+        "Skywalker Radiantbreaker in icedust"
+      ],
+      "status": "WEAK",
+      "resultCount": 10
+    },
+    {
+      "query": "shadow wolf",
+      "note": "multi-token creature",
+      "precision": 0,
+      "mrr": 0,
+      "ndcg": 0,
+      "grades": [],
+      "topTitles": [],
+      "status": "WEAK",
+      "resultCount": 0
+    },
+    {
+      "query": "draogn",
+      "note": "typo: transposition",
+      "precision": 0.7,
+      "mrr": 1,
+      "ndcg": 0.9878316351280039,
+      "grades": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        2
+      ],
+      "topTitles": [
+        "Ordergleam Dragonshroud in zenithtear",
+        "Mysticdeep Mysticcry in dragonshroud",
+        "Dragonshroud Aurorafrost in titanblade",
+        "Technogate Knightdrift in dragon",
+        "Spiritdeep Dragon in blizzardshroud"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "samuari",
+      "note": "typo: transposition",
+      "precision": 0.3,
+      "mrr": 0.5,
+      "ndcg": 0.7328286204777912,
+      "grades": [
+        0,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Infernalnode Bladestrike in demonedge",
+        "Knightleaf Samurai in omniclaw",
+        "Ironshard Infinityhelm in samurai",
+        "Samurai Sunbloom in bloodfang",
+        "Aquacrown Technomark in bladesong"
+      ],
+      "status": "OKAY",
+      "resultCount": 10
+    },
+    {
+      "query": "cybepunk",
+      "note": "typo: missing letter",
+      "precision": 0.4,
+      "mrr": 1,
+      "ndcg": 1,
+      "grades": [
+        2,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Shadowscale Electrostorm in hypermantle",
+        "Nightrider Divinetide in chronofire",
+        "Ironpulse Cyberpunk in quantumrunner",
+        "Cyberpunk Necrobreaker in abyssaldust",
+        "Seamantle Retroblade in divineroot"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "phenix",
+      "note": "typo: missing letter",
+      "precision": 0.3,
+      "mrr": 1,
+      "ndcg": 1,
+      "grades": [
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Silverthorn Vortexshard in phoenix",
+        "Phoenix Seabringer in dawnbane",
+        "Omnipeak Phoenix in phantomdeep",
+        "Electrorune Demonwing in silvervoid",
+        "Primalstone Arcanebloom in voidfang"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "wizrd",
+      "note": "typo: missing vowel",
+      "precision": 0.3,
+      "mrr": 0.25,
+      "ndcg": 0.5508095940041027,
+      "grades": [
+        0,
+        0,
+        0,
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Retromoon Protokeeper in duskforge",
+        "Duskforge Stellarclaw in neosurge",
+        "Necrobond Duskforge in sapphirerift",
+        "Lunarleaf Solarstone in wizard",
+        "Soulforge Wizard in onyxsurge"
+      ],
+      "status": "WEAK",
+      "resultCount": 10
+    },
+    {
+      "query": "fantasy",
+      "note": "category name match",
+      "precision": 0.4,
+      "mrr": 1,
+      "ndcg": 0.7945039219825195,
+      "grades": [
+        2,
+        0,
+        0,
+        2,
+        0,
+        0,
+        0,
+        2,
+        0,
+        2
+      ],
+      "topTitles": [
+        "Sanctuary Darkdust in crystalrune",
+        "Auroraslayer Sanctuary in chronosoul",
+        "Cryorider Seatide in sanctuary",
+        "Havenfire Netherdust in vortexrune",
+        "Lightningnode Biostrike in knightedge"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "anime",
+      "note": "category/style match",
+      "precision": 0.4,
+      "mrr": 0.5,
+      "ndcg": 0.6836127878533237,
+      "grades": [
+        0,
+        2,
+        0,
+        2,
+        0,
+        2,
+        2,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Nanoslayer Dawnfire in infinitysoul",
+        "Dawnfire Skydust in dawnrune",
+        "Netherrider Technotide in dawnfire",
+        "Chronobane Emeraldgate in biospire",
+        "Angelblade Nebulawatcher in knightpeak"
+      ],
+      "status": "OKAY",
+      "resultCount": 10
+    },
+    {
+      "query": "sci-fi",
+      "note": "category match with hyphen",
+      "precision": 0,
+      "mrr": 0,
+      "ndcg": 0,
+      "grades": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Nightash Angelroar in cosmicaura",
+        "Angelshard Bloodhelm in hyperstone",
+        "Sigil Psychostar in infinityleap",
+        "Astroedge Sigil in icewalker",
+        "Hyperstar Firevoid in sigil"
+      ],
+      "status": "WEAK",
+      "resultCount": 10
+    },
+    {
+      "query": "sword",
+      "note": "expansion should surface blade/katana",
+      "precision": 0.3,
+      "mrr": 1,
+      "ndcg": 1,
+      "grades": [
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Holoflux Sword in nethercore",
+        "Sword Voidrunner in onyxstalker",
+        "Midnightclaw Moonstalker in sword",
+        "Darkstrike Infernalgaze in dragonwing",
+        "Astralnode Darkstrike in dragonedge"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "forest",
+      "note": "expansion should surface nature terms",
+      "precision": 0.4,
+      "mrr": 1,
+      "ndcg": 0.9792463631362246,
+      "grades": [
+        2,
+        2,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1
+      ],
+      "topTitles": [
+        "Knight Forest in sun",
+        "Cosmicpath Hypernexus in forest",
+        "Forest Ironveil in ultrasphere",
+        "Ironcrown Ghostmark in necrosong",
+        "Dragonvoid Angelbeam in infernalrider"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "night sky",
+      "note": "expansion for atmospheric scene",
+      "precision": 0,
+      "mrr": 0,
+      "ndcg": 0,
+      "grades": [],
+      "topTitles": [],
+      "status": "WEAK",
+      "resultCount": 0
+    },
+    {
+      "query": "flame",
+      "note": "expansion for fire-adjacent",
+      "precision": 0.5,
+      "mrr": 1,
+      "ndcg": 1,
+      "grades": [
+        2,
+        2,
+        2,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Flame Geodrift in tempestcry",
+        "Sapphirebane Flame in miragespire",
+        "Divinenexus Primalroot in flame",
+        "Fireflare Stellarrunner in eclipsestalker",
+        "Dreamspark Technorise in quantumroar"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "ocean",
+      "note": "expansion for water domain",
+      "precision": 0.4,
+      "mrr": 1,
+      "ndcg": 1,
+      "grades": [
+        2,
+        2,
+        2,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "topTitles": [
+        "Omnispire Ocean in spectraldrift",
+        "Ocean Hyperdrop in lunarheart",
+        "Eclipsekeeper Psychoward in ocean",
+        "Microtide Nightaura in megapulse",
+        "Sunhold Solarsurge in abyssalmist"
+      ],
+      "status": "GOOD",
+      "resultCount": 10
+    },
+    {
+      "query": "eclipse aurora nebula",
+      "note": "3-token query, low intersection expected",
+      "precision": 0,
+      "mrr": 0,
+      "ndcg": 0,
+      "grades": [],
+      "topTitles": [],
+      "status": "WEAK",
+      "resultCount": 0
+    },
+    {
+      "query": "steampunk fortress",
+      "note": "style + location cross-domain",
+      "precision": 0,
+      "mrr": 0,
+      "ndcg": 0,
+      "grades": [],
+      "topTitles": [],
+      "status": "WEAK",
+      "resultCount": 0
+    }
+  ]
+}

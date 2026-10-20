@@ -1,0 +1,91 @@
+{
+  "timestamp": "2026-10-20T14:12:15.014Z",
+  "targetUrl": "http://127.0.0.1:5063",
+  "catalogSize": 10000,
+  "nodeVersion": "v26.8.1",
+  "platform": "linux",
+  "arch": "x64",
+  "scenarios": [
+    {
+      "scenario": "Scenario 1: Steady-State (15 CCU)",
+      "durationSeconds": 10.07,
+      "connections": 15,
+      "pipelining": 1,
+      "requestsTotal": 5171,
+      "requestsPerSec": 517.1,
+      "throughputMBPerSec": 1.04,
+      "latency": {
+        "averageMs": 28.6,
+        "p50Ms": 32,
+        "p90Ms": 41,
+        "p95Ms": 48,
+        "p97_5Ms": 55,
+        "p99Ms": 63,
+        "p99_9Ms": 134,
+        "maxMs": 211,
+        "minMs": 1,
+        "stddevMs": 13.92
+      },
+      "statusCodes": {
+        "2xx": 5171,
+        "non2xx": 0,
+        "errors": 0,
+        "timeouts": 0
+      }
+    },
+    {
+      "scenario": "Scenario 2: Peak Load (50 CCU)",
+      "durationSeconds": 10.38,
+      "connections": 50,
+      "pipelining": 1,
+      "requestsTotal": 4700,
+      "requestsPerSec": 470,
+      "throughputMBPerSec": 0.98,
+      "latency": {
+        "averageMs": 109.03,
+        "p50Ms": 99,
+        "p90Ms": 144,
+        "p95Ms": 160.5,
+        "p97_5Ms": 177,
+        "p99Ms": 224,
+        "p99_9Ms": 1464,
+        "maxMs": 1733,
+        "minMs": 5,
+        "stddevMs": 80.6
+      },
+      "statusCodes": {
+        "2xx": 4700,
+        "non2xx": 0,
+        "errors": 0,
+        "timeouts": 0
+      }
+    },
+    {
+      "scenario": "Scenario 3: Stress Surge (100 CCU)",
+      "durationSeconds": 10.52,
+      "connections": 100,
+      "pipelining": 1,
+      "requestsTotal": 5000,
+      "requestsPerSec": 500,
+      "throughputMBPerSec": 1.04,
+      "latency": {
+        "averageMs": 207.75,
+        "p50Ms": 175,
+        "p90Ms": 227,
+        "p95Ms": 252.5,
+        "p97_5Ms": 278,
+        "p99Ms": 1806,
+        "p99_9Ms": 5420,
+        "maxMs": 5960,
+        "minMs": 6,
+        "stddevMs": 383.31
+      },
+      "statusCodes": {
+        "2xx": 5000,
+        "non2xx": 0,
+        "errors": 0,
+        "timeouts": 0
+      }
+    }
+  ]
+}

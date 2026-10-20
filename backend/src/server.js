@@ -16,7 +16,7 @@ async function setupSearchEngine({ mongoUri = process.env.MONGODB_URI } = {}) {
   const words = generate10kWords();
   const nodes = generate10kNodes(words);
   const graph = buildPopulatedGraph(nodes);
-  const neighborIndex = new NeighborIndex(15).build(graph);
+  const neighborIndex = new NeighborIndex(20).build(graph);
 
   let isAtlasLive = false;
   let fetchPool = null;

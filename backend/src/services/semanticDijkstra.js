@@ -1,6 +1,6 @@
 const { LRUCache } = require('lru-cache');
 const { memoryGraph: defaultGraph } = require('./memoryGraph');
-const { nlp, STOPWORDS, DOMAIN_STOPWORDS, singularize, normalizeToken } = require('./textNlp');
+const { nlp, STOPWORDS, DOMAIN_STOPWORDS, singularize, normalizeToken, normalizeTokenStrict } = require('./textNlp');
 
 const MAX_COST = 6;
 const MAX_HOPS = 2;
@@ -15,20 +15,28 @@ function analyzeQuery(q) {
   const text = String(q || '').toLowerCase();
   const doc = nlp(text);
   const adjectives = new Set();
-  doc.match('#Adjective').terms().forEach((t) => adjectives.add(normalizeToken(t.text('normal'))));
+  doc.match('#Adjective').terms().forEach((t) => adjectives.add(normalizeTokenStrict(t.text('normal'))));
   const nouns = new Set();
-  doc.match('(#Noun|#ProperNoun)').terms().forEach((t) => nouns.add(normalizeToken(t.text('normal'))));
+  doc.match('(#Noun|#ProperNoun)').terms().forEach((t) => nouns.add(normalizeTokenStrict(t.text('normal'))));
 
   const seen = new Map();
   for (const raw of text.split(/\s+/)) {
-    const norm = normalizeToken(raw);
-    if (!norm) continue;
-    const word = singularize(norm);
-    if (STOPWORDS.has(word)) continue;
-    let penalty = PENALTY.entity;
-    if (DOMAIN_STOPWORDS.has(norm) || DOMAIN_STOPWORDS.has(word)) penalty = PENALTY.stopword;
-    else if (adjectives.has(norm) && !nouns.has(norm)) penalty = PENALTY.modifier;
-    if (!seen.has(word) || penalty > seen.get(word)) seen.set(word, penalty);
+    const norm = normalizeToken(raw);      // preserves internal hyphens
+    const strict = normalizeTokenStrict(raw); // strips hyphens
+    if (!norm && !strict) continue;
+
+    // Emit the hyphenated form (e.g. "sci-fi") if it differs from the strict form
+    const candidates = new Set();
+    if (norm) candidates.add(singularize(norm));
+    if (strict && strict !== norm) candidates.add(singularize(strict));
+
+    for (const word of candidates) {
+      if (STOPWORDS.has(word)) continue;
+      let penalty = PENALTY.entity;
+      if (DOMAIN_STOPWORDS.has(word)) penalty = PENALTY.stopword;
+      else if (adjectives.has(strict) && !nouns.has(strict)) penalty = PENALTY.modifier;
+      if (!seen.has(word) || penalty > seen.get(word)) seen.set(word, penalty);
+    }
   }
   return Array.from(seen, ([word, penalty]) => ({ word, penalty }));
 }
@@ -195,10 +203,14 @@ function expandQuerySemantically(q, graph = defaultGraph, limit = TOP_TERMS) {
 
   const terms = [];
   for (const v of candidates) {
-    let cost = 0;
+    // Use min-cost across tokens: a term only needs to be close to ONE query
+    // token to be relevant. This fixes multi-word queries like "dragon knight"
+    // where each token's neighbors are disjoint.
+    let cost = Infinity;
     tokens.forEach((t, i) => {
       const d = traversals[i].get(v);
-      cost += d !== undefined ? d : t.penalty;
+      const c = d !== undefined ? d : t.penalty;
+      if (c < cost) cost = c;
     });
     terms.push({ term: v, cost, boost: boostFor(cost) });
   }

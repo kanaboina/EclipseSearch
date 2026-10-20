@@ -43,10 +43,10 @@ test('singularize leaves short words (< 3 chars) and words with digits unchanged
   assert.equal(singularize(''), '');
 });
 
-test('normalizeToken converts to lowercase and strips non-alphanumeric characters', () => {
-  assert.equal(normalizeToken('Dark-Wolf!'), 'darkwolf');
+test('normalizeToken converts to lowercase, strips non-alphanumeric but preserves internal hyphens', () => {
+  assert.equal(normalizeToken('Dark-Wolf!'), 'dark-wolf');
   assert.equal(normalizeToken('  #Anime_Art  '), 'animeart');
-  assert.equal(normalizeToken('4K-HD'), '4khd');
+  assert.equal(normalizeToken('4K-HD'), '4k-hd');
 });
 
 test('normalizeToken handles mixed symbols, accents and emojis cleanly', () => {

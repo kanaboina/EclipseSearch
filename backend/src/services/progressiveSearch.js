@@ -28,11 +28,12 @@ function createProgressiveSearch({
   minScoreRatio = 0,
 } = {}) {
   async function buildSession(q, deviceType) {
-    const { terms } = index.expand(q);
+    const { terms, tokens } = index.expand(q);
     const relevant = terms.filter((t) => t.boost >= minBoost);
+    const rawTokens = (tokens || []).map((t) => t.word);
     const rows = relevant.length
       ? await singleflight.run(`${searchKey(q)}:${deviceType || 'all'}`, () =>
-          fetchPool({ terms: relevant, deviceType, limit: poolSize }))
+          fetchPool({ terms: relevant, deviceType, limit: poolSize, rawTokens }))
       : [];
     const topScore = rows.length && typeof rows[0].score === 'number' ? rows[0].score : null;
     const cutoff = topScore && minScoreRatio > 0 ? topScore * minScoreRatio : null;

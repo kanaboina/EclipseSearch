@@ -10,7 +10,8 @@
     "test:metrics": "node scripts/benchmark-10k.js",
     "test:load": "node scripts/http-load-test.js",
     "benchmark": "node scripts/benchmark-10k.js",
-    "backfill:semantic": "node scripts/backfill-semantic-graph.js"
+    "backfill:semantic": "node scripts/backfill-semantic-graph.js",
+    "test:relevance": "node scripts/relevance-test.js"
   },
   "engines": {
     "node": ">=18"

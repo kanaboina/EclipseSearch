@@ -3,7 +3,7 @@ const {
   TOP_TERMS, MAX_HOPS, MAX_TYPO_TOKENS,
 } = require('./semanticDijkstra');
 
-const K = 15;
+const K = 20;
 
 /**
  * Write-time precomputed top-K neighbor index stored in flat TypedArrays
@@ -145,10 +145,12 @@ class NeighborIndex {
     for (const l of lists) for (const w of l.keys()) candidates.add(w);
     const terms = [];
     for (const v of candidates) {
-      let cost = 0;
+      // Min-cost: a term only needs to be close to ONE query token.
+      let cost = Infinity;
       tokens.forEach((t, i) => {
         const d = lists[i].get(v);
-        cost += d !== undefined ? d : t.penalty;
+        const c = d !== undefined ? d : t.penalty;
+        if (c < cost) cost = c;
       });
       terms.push({ term: v, cost, boost: boostFor(cost) });
     }

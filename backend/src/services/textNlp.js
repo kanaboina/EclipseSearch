@@ -37,8 +37,13 @@ function singularize(word) {
 }
 
 function normalizeToken(raw) {
-  const t = String(raw).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const t = String(raw).toLowerCase().replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '');
   return t;
+}
+
+/** Strip hyphens entirely (for secondary matching). */
+function normalizeTokenStrict(raw) {
+  return String(raw).toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 /**
@@ -65,4 +70,4 @@ function extractCleanWords({ title = '', excerpt = '', story = '', tags = [] } =
   return Array.from(out);
 }
 
-module.exports = { nlp, STOPWORDS, DOMAIN_STOPWORDS, singularize, normalizeToken, extractCleanWords };
+module.exports = { nlp, STOPWORDS, DOMAIN_STOPWORDS, singularize, normalizeToken, normalizeTokenStrict, extractCleanWords };

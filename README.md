@@ -6,6 +6,7 @@
 [![Peak Throughput](https://img.shields.io/badge/in--process%20peak-28.4k%20QPS-purple.svg)](#concurrency-ladder-1k--20k-concurrent-searches)
 [![HTTP Load](https://img.shields.io/badge/autocannon-1.2k%20req%2Fs%20%C2%B7%200%20errors-orange.svg)](#real-http-load-testing-autocannon-on-atlas-schema-10k-catalog)
 [![Edge Cache](https://img.shields.io/badge/benchmarks-no%20Cloudflare%20cache-lightgrey.svg)](#benchmark-scope--methodology)
+[![Relevance](https://img.shields.io/badge/nDCG%4010-0.639%20%E2%86%92%200.944-brightgreen.svg)](#v21-before--after-comparison)
 
 A deterministic semantic search engine and associative knowledge graph for fantasy, anime and artistic wallpaper catalogs.
 
@@ -24,10 +25,11 @@ Version 2 changes the read path fundamentally. **Graph traversal now happens onl
 4. [Optimisation Techniques](#optimisation-techniques)
 5. [Test Suite & Results](#test-suite--results)
 6. [Performance & Load Testing](#performance--load-testing)
-7. [Repository Structure](#repository-structure)
-8. [Getting Started](#getting-started)
-9. [Atlas Search Index](#atlas-search-index)
-10. [Operational Notes & Known Limits](#operational-notes--known-limits)
+7. [v2.1 Before / After Comparison](#v21-before--after-comparison)
+8. [Repository Structure](#repository-structure)
+9. [Getting Started](#getting-started)
+10. [Atlas Search Index](#atlas-search-index)
+11. [Operational Notes & Known Limits](#operational-notes--known-limits)
 
 ---
 
@@ -91,7 +93,7 @@ flowchart LR
 
 ### 1. Query understanding — [`textNlp.js`](./backend/src/services/textNlp.js), [`semanticDijkstra.js`](./backend/src/services/semanticDijkstra.js)
 
-The query is tokenised, normalised (lower-case, symbols and emoji stripped), singularised (`fairies → fairy`, `witches → witch`, and irregular forms) and filtered for stopwords. `compromise` tags each surviving token with a part of speech. The tag sets the **miss penalty** applied when a candidate term is unrelated to that token:
+The query is tokenised, normalised (lower-case, symbols and emoji stripped; internal hyphens are kept, so `sci-fi` is emitted as both `sci-fi` and `scifi`), singularised (`fairies → fairy`, `witches → witch`, and irregular forms) and filtered for stopwords. `compromise` tags each surviving token with a part of speech. The tag sets the **miss penalty** applied when a candidate term is unrelated to that token:
 
 | Token class | Miss penalty | Rationale |
 |:---|:---:|:---|
@@ -107,7 +109,7 @@ When a word is added or edited, `NeighborIndex.update(graph, changedWords)`:
 
 1. Runs a BFS outward from the changed words for `MAX_HOPS = 2` hops. These are the only nodes whose shortest paths can have changed.
 2. Runs **Dial's bucket-queue Dijkstra** (integer costs 0..6, +1 friction on hop 2) from each affected node.
-3. Writes the cheapest `K = 15` neighbors into flat buffers:
+3. Writes the cheapest `K = 20` neighbors into flat buffers (raised from 15 in v2.1):
 
 ```text
 neighborNodeIds[node * K + i]   Uint32   neighbor node id
@@ -119,7 +121,7 @@ Buffers grow by doubling, which amortises the cost of growth to O(1). At startup
 
 ### 3. Query expansion with zero traversal
 
-`NeighborIndex.expand(q)` reads each token's precomputed neighbor list and builds the union of candidate terms. Each candidate's total cost is the sum, over the query tokens, of either its precomputed distance or that token's miss penalty. Candidates are sorted by cost and the top 25 are kept. `boostFor(cost)` converts each cost into an Atlas boost. This has the same contract as the v1 `expandQuerySemantically`, but **no graph traversal happens per request**.
+`NeighborIndex.expand(q)` reads each token's precomputed neighbor list and builds the union of candidate terms. Each candidate's cost is the **minimum**, over the query tokens, of either its precomputed distance or that token's miss penalty. A term only has to be close to *one* query token to be relevant. (Before v2.1 this was a **sum**. For multi-word queries such as `dragon knight`, whose tokens have disjoint neighborhoods, every candidate paid at least one 15-point miss penalty, so every boost fell below the `minBoost = 2` cutoff and the query returned nothing.) Candidates are sorted by cost and the top 25 are kept. `boostFor(cost)` converts each cost into an Atlas boost. This has the same contract as the v1 `expandQuerySemantically`, but **no graph traversal happens per request**.
 
 **Typo fallback.** A token that is not in the vocabulary (at most 2 per query) is matched to the closest dictionary word using the Sørensen–Dice LCS similarity `2·LCS(A,B) / (|A|+|B|)`:
 
@@ -155,7 +157,7 @@ The engine uses AI only to discover new words, never during a search. If none of
 | # | Technique | Where | Why it matters |
 |:-:|:---|:---|:---|
 | 1 | **Read/write split** (precompute at write time) | `neighborIndex.js` | Writes are rare and reads are frequent, so the expensive traversal moves to the rare side. |
-| 2 | **Struct-of-arrays in `TypedArray`s** | `neighborIndex.js` | Cache-friendly sequential reads and no per-node heap objects for V8's GC to scan. 10k nodes × K=15 take about **1.2 MB**. |
+| 2 | **Struct-of-arrays in `TypedArray`s** | `neighborIndex.js` | Cache-friendly sequential reads and no per-node heap objects for V8's GC to scan. 10k nodes × K=20 take about **1.6 MB**. |
 | 3 | **Incremental, region-bounded updates** | `NeighborIndex.update` | Only nodes within 2 hops of a change are recomputed. A full rebuild is needed only at startup or backfill. |
 | 4 | **Dial's algorithm** (bucket queue) | `semanticDijkstra.js` | Integer costs 0..6 allow O(1) bucket operations with no binary heap and no `log n` factor. |
 | 5 | **Hop friction + cost ceiling** | `semanticDijkstra.js` | Prevents *dragon → animal → cat* style drift and bounds the search space. |
@@ -199,7 +201,7 @@ Wall clock:     ~6.1 s   (≈ 4.5 s of this is the intentional 10k-token stress 
 
 | Suite | Tests | Status | Verification focus |
 |:---|:---:|:---:|:---|
-| `textNlp.test.js` | 12 | ✅ | Singularisation (`-ies`, `-shes`, `-ches`, `-xes`, irregulars), general and domain stopwords, token normalisation |
+| `textNlp.test.js` | 12 | ✅ | Singularisation (`-ies`, `-shes`, `-ches`, `-xes`, irregulars), general and domain stopwords, token normalisation (internal hyphens preserved) |
 | `memoryGraph.test.js` | 10 | ✅ | Asymmetric hyponym/hypernym weights, symmetric relations, self-loop pruning, 1..6 clamp, rebuild and init |
 | `semanticDijkstra.test.js` | 15 | ✅ | PoS penalties (15 / 6 / 1), Dial buckets, hop friction, cost and hop cutoffs, LCS typo tiers (≥0.80, 0.55–0.80) |
 | `searchBufferCache.test.js` | 8 | ✅ | LRU ordering, TTL expiry, hit promotion, generation-based invalidation |
@@ -338,11 +340,17 @@ npm test                              # full suite: unit + SLA + high-perf + str
 node --test test/stress.test.js       # stress scenarios only
 npm run benchmark                     # component micro-benchmarks -> test-metrics-10k.json
 node --expose-gc scripts/concurrency-ladder.js   # 1k -> 20k ladder -> concurrency-ladder-results.json
+npm run test:relevance                # golden-set relevance (P@10, MRR, nDCG@10)
+node scripts/relevance-test.js --save before     # snapshot, then after a change:
+node scripts/relevance-test.js --compare before  # A/B delta per query
 ```
 
 `--expose-gc` lets the ladder force a GC between steps so that heap readings are comparable.
 
 ### Real HTTP Load Testing (`autocannon` on Atlas-Schema 10k Catalog)
+
+> [!NOTE]
+> The table below is the **original reference run (pre-v2.1, idle machine)**. For a same-machine, same-session comparison of the code before and after the v2.1 relevance fixes, see [v2.1 Before / After Comparison](#v21-before--after-comparison).
 
 While the in-process concurrency ladder measures raw algorithmic capability without network overhead, [`scripts/http-load-test.js`](./backend/scripts/http-load-test.js) runs **real HTTP requests over TCP** against the live Node.js HTTP server ([`src/server.js`](./backend/src/server.js)), querying a **10,000-document Atlas-schema catalog** ([`src/mockAtlasData.js`](./backend/src/mockAtlasData.js)). *Last run: 2026-10-20, Node v26.8.1, `autocannon@^8`, single process, no Cloudflare cache.*
 
@@ -390,6 +398,92 @@ npm run test:load
 
 ---
 
+## v2.1 Before / After Comparison
+
+v2.1 fixes relevance in the query-expansion layer. **Before** is commit `0cfe546`. **After** is v2.1.
+
+| Change | File | Before | After |
+|:---|:---|:---|:---|
+| Multi-token cost aggregation | `neighborIndex.js`, `semanticDijkstra.js` | Sum of per-token costs | **Minimum** per-token cost |
+| Neighbors per node | `neighborIndex.js`, `server.js` | `K = 15` | `K = 20` |
+| Hyphenated tokens | `textNlp.js`, `semanticDijkstra.js` | `sci-fi` → `scifi` only | `sci-fi` **and** `scifi` (new `normalizeTokenStrict`) |
+| Raw tokens to pool fetch | `progressiveSearch.js` | not passed | `rawTokens` passed to `fetchPool` |
+
+**Methodology.** Both versions were run on the same machine in the same session (Node v26.8.1, 12 logical cores, 10k mock Atlas catalog, no Cloudflare cache). The *before* code ran from a `git worktree` of `0cfe546`. Autocannon was run **twice in alternating order** (before→after, then after→before) and the two runs were averaged to cancel out ordering effects. The machine was under background load (load average ≈ 4), so **absolute numbers are lower than the reference tables above. Compare the deltas, not the absolute values.** Raw data is in [`backend/benchmark-comparison/2026-10-20/`](./backend/benchmark-comparison/2026-10-20/).
+
+### 1. Unit test suite
+
+| | Before | After |
+|:---|:---:|:---:|
+| Tests passed | 122 / 122 | **122 / 122** |
+| Failures | 0 | 0 |
+| Wall clock | 12.8 s | 11.6 s |
+
+### 2. Search relevance (25-query golden set, K = 10)
+
+| Metric | Before | After | Δ |
+|:---|:---:|:---:|:---:|
+| **Mean Precision@10** | 0.296 | **0.760** | **+0.464** (+157%) |
+| **Mean MRR** | 0.615 | **0.941** | **+0.326** (+53%) |
+| **Mean nDCG@10** | 0.639 | **0.944** | **+0.305** (+48%) |
+| GOOD / OKAY / WEAK queries | 14 / 2 / 9 | **23 / 1 / 1** | 8 fewer WEAK |
+
+| Query type | P@10 before → after | MRR before → after | nDCG before → after |
+|:---|:---:|:---:|:---:|
+| Exact match (5) | 0.56 → **0.76** | 1.00 → 1.00 | 0.99 → 0.99 |
+| Multi-word (5) | 0.04 → **0.94** | 0.23 → **1.00** | 0.26 → **1.00** |
+| Category / style (6) | 0.30 → **0.97** | 0.42 → **1.00** | 0.41 → **1.00** |
+| Semantic expansion (5) | 0.32 → **0.70** | 0.80 → **1.00** | 0.80 → **0.97** |
+| Edge cases (2) | 0.00 → **0.90** | 0.00 → **1.00** | 0.00 → **0.99** |
+| Typo tolerance (5) | 0.40 → 0.44 | 0.75 → 0.71 ⚠️ | 0.85 → 0.77 ⚠️ |
+
+Queries that went from **zero relevant results** to fully relevant: `dragon knight`, `cyberpunk neon`, `shadow wolf`, `night sky`, `sci-fi`, `eclipse aurora nebula`, `steampunk fortress` (all nDCG 0.00 → ≥ 0.99). `crystal cavern` improved from 0.32 to 1.00.
+
+> [!WARNING]
+> **Typo regression.** `phenix` (nDCG 1.00 → 0.73) and `samuari` (0.73 → 0.62) rank slightly worse. Min-cost aggregation lets the +1/+2 typo-inherited neighbors compete equally with the corrected word. `wizrd` was already WEAK and still is. Possible follow-up: give the matched dictionary word a cost-0 slot ahead of its inherited neighbors.
+
+### 3. Autocannon HTTP load test (average of 2 alternating runs)
+
+| Scenario | Metric | Before | After | Δ |
+|:---|:---|---:|---:|---:|
+| **15 CCU** steady state | Req/s | 490 | 351 | −28% |
+| | P50 / P95 / P99 | 31.5 / 43.8 / 60.0 ms | 45.0 / 72.0 / 97.5 ms | +43% / +65% / +63% |
+| **50 CCU** peak | Req/s | 458 | 346 | −24% |
+| | P50 / P95 / P99 | 103.5 / 160.0 / 223.0 ms | 134.5 / 202.5 / 349.5 ms | +30% / +27% / +57% |
+| **100 CCU** surge | Req/s | 460 | 308 | −33% |
+| | P50 / P95 / P99 | 188.0 / 330.3 / 2,036 ms | 251.0 / 545.3 / 4,683 ms | +34% / +65% / +130% |
+| All | **Avg response size** | **2.3 KB** | **17.5 KB** | **×7.6** |
+| All | Errors + timeouts + non-2xx / total requests | 0 / 28,152 | **0 / 20,088** | — |
+
+> [!IMPORTANT]
+> **The "before" throughput was inflated by empty results.** Before v2.1, multi-word queries in the load mix produced almost no expansion terms above `minBoost`. In a sample of 6 load-test queries (`cyberpunk neon`, `dark fantasy dragon`, `anime warrior girl`, `phoenix fire blade`, `dragn castel`, `samurai sunset`), 5 had **0** terms and 1 had a single term. For most requests the server skipped the pool fetch and returned an empty or near-empty page (average about 2.3 KB). After v2.1, every sampled query sends 25 relevant terms to the catalog and returns **full 20-result pages of about 17.5 KB**. The ~25–33% req/s drop is the cost of actually doing the search work and serialising 7.6× more JSON. It is not a regression in the engine.
+
+### 4. In-process concurrency ladder (engine only, no HTTP)
+
+| Concurrency | QPS before | QPS after | p99 before | p99 after | Heap before → after |
+|---:|---:|---:|---:|---:|:---:|
+| 1,000 | 6,560 | 6,444 | 110 ms | 109 ms | 27 → 28 MB |
+| 5,000 | 10,721 | 11,331 | 455 ms | 430 ms | 71 → 74 MB |
+| 10,000 | 13,140 | 12,623 | 749 ms | 779 ms | 123 → 129 MB |
+| 15,000 | 13,315 | 11,293 | 1,102 ms | 1,283 ms | 161 → 164 MB |
+| 20,000 | 15,183 | 13,318 | 1,294 ms | 1,475 ms | 199 → 190 MB |
+| **Peak** | **15,183** | **13,890** | | | |
+
+With the HTTP layer and mock-catalog scoring removed, the engine is within about **0–10%** of its previous speed. K went from 15 to 20 and expansion now keeps 25 live terms instead of about 0. Heap stays flat.
+
+### Verdict
+
+| Dimension | Result |
+|:---|:---|
+| Correctness (unit tests) | ✅ No change: 122 / 122 |
+| Search quality | ✅ **Large gain**: nDCG@10 +48%, WEAK queries 9 → 1 |
+| Engine overhead | ≈ Roughly unchanged (−0 to −10%, within run-to-run noise at low concurrency) |
+| HTTP throughput | ⚠️ −24 to −33% req/s, because responses now carry real results (×7.6 payload) |
+| Reliability | ✅ 0 errors across 48,240 HTTP requests |
+| Typo ranking | ⚠️ Small regression on 2 of 5 typo queries (tracked above) |
+
+---
+
 ## Repository Structure
 
 ```text
@@ -400,10 +494,13 @@ EclipseSearch/
     ├── http-load-test-results.json         # 🆕 Autocannon real HTTP load test metrics
     ├── concurrency-ladder-results.json     # 1k→20k concurrency ladder output
     ├── test-metrics-10k.json               # Component latency export (10k space)
+    ├── benchmark-comparison/2026-10-20/    # 🆕 v2.1 before/after raw data (autocannon, ladder, relevance)
+    ├── relevance-results/                  # 🆕 Saved relevance snapshots (--save / --compare)
     ├── docs/
     │   └── atlas-search.md                 # Atlas Search index definition
     ├── scripts/
     │   ├── http-load-test.js               # 🆕 Autocannon realistic HTTP load test runner
+    │   ├── relevance-test.js               # 🆕 Golden-set relevance suite (P@K, MRR, nDCG, A/B compare)
     │   ├── backfill-semantic-graph.js      # Hydrate the graph from existing wallpapers
     │   ├── benchmark-10k.js                # Statistical micro-benchmark runner
     │   ├── concurrency-ladder.js           # 20-step concurrent load generator
@@ -532,6 +629,7 @@ See [`docs/atlas-search.md`](./backend/docs/atlas-search.md) for details.
 | **Session memory** | Each session holds up to 200 rows plus a `Set`. The default LRU cap is 5,000 sessions with a 15-minute TTL. Size `max` from the available heap. |
 | **Index consistency** | `NeighborIndex` updates synchronously inside the write path. Readers in the same process see the new neighbors immediately after the write resolves. Other replicas pick them up on restart or on their own ingestion events. |
 | **Query length** | The live expansion path is linear in the number of tokens (see S5). Enforce a request-level limit, for example 64 characters or 8 tokens. |
+| **Typo ranking** | Since v2.1's min-cost aggregation, typo-inherited neighbors can outrank the corrected word (`phenix`, `samuari`). See the [comparison](#v21-before--after-comparison). |
 | **Typo-cache invalidation** | The bitmask dictionary and typo LRU are rebuilt automatically when the vocabulary size changes. |
 | **Benchmark realism** | The ladder uses a mocked DB and burst arrivals on one process, **without Cloudflare caching**. Treat it as a measure of engine overhead, not end-to-end SLOs. |
 
