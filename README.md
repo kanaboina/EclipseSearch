@@ -1,6 +1,6 @@
 # Eclipse Fantasy — Semantic Search Engine
 
-[![Tests](https://img.shields.io/badge/tests-196%20passing-brightgreen.svg)](./backend/test/)
+[![Tests](https://img.shields.io/badge/tests-217%20passing-brightgreen.svg)](./backend/test/)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-blue.svg)](https://nodejs.org/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas%20Search-green.svg)](https://www.mongodb.com/atlas/database)
 [![Peak Throughput](https://img.shields.io/badge/in--process%20peak-28.4k%20QPS-purple.svg)](#concurrency-ladder-1k--20k-concurrent-searches)
@@ -149,12 +149,12 @@ The engine uses AI only to discover new words, never during a search. If none of
 | 5 | **Hop friction + cost ceiling** | `semanticDijkstra.js` | Prevents *dragon → animal → cat* style drift and bounds the search space. |
 | 6 | **Bitmask + popcount pre-filter** | `findClosestWordByNormalizedLCS` | A 32-bit AND and a SWAR popcount reject most dictionary words before the O(n·m) DP runs. |
 | 7 | **Branch-and-bound on length** | `findClosestWordByNormalizedLCS` | Skips any candidate whose best possible score cannot beat the current best. |
-| 8 | **Pre-allocated DP rows** | `lcsLength` | `Uint8Array` rows are reused, so no allocation happens per candidate. |
+| 8 | **Compact DP rows** | `lcsLength` | Uses two `Uint8Array` rows allocated per comparison. |
 | 9 | **Negative caching** | LRU `typoCache` (5,000) | Misses are stored as a `NO_MATCH` sentinel, so repeated garbage queries cost O(1). |
 | 10 | **Typo budget** (`MAX_TYPO_TOKENS = 2`) | expansion | Limits CPU per request, which mitigates algorithmic-complexity DoS. |
 | 11 | **Singleflight request coalescing** | `singleflight.js` | Prevents a thundering herd on hot or trending queries. N concurrent callers produce one fetch. |
 | 12 | **Order-insensitive keys** | `searchKey` / `normalizeQuery` | `"Red Dragon"` and `"dragon red"` coalesce and share a cache entry. |
-| 13 | **Session-scoped ranked pools** | `progressiveSearch.js` | One DB query serves up to 10 pages. Deduplication uses an O(1) `Set`. |
+| 13 | **Session-scoped ranked pools** | `progressiveSearch.js` | Reuses ranking across pages; live pages hydrate IDs and recheck visibility. Deduplication uses an O(1) `Set`. |
 | 14 | **Relevance cutoffs** | `MIN_BOOST`, `minScoreRatio` | Stops paginating into noise and makes the result pool smaller. |
 | 15 | **Query-level visibility** | `visibilityFilter.js` | The database never returns ineligible rows, so no work is spent filtering them afterwards. |
 | 16 | **DTO projection** | `wallpaperDTO.js` | Removes `story`, `downloadKeys`, `uuid` and similar fields, which keeps payloads small and private data off the wire. |
@@ -173,58 +173,72 @@ npm test
 
 ### Execution summary
 
+Verified on **2026-10-20**, against [commit `b69e119`](https://github.com/kanaboina/EclipseSearch/commit/b69e1191bf034bfb491bda01a91f8ea5eb7e7bce), using **Node.js v24.21.0**, **npm 11.19.0**, and **Ubuntu 26.04.1**.
+
 ```text
-Test files:        19
-Total tests:      196
-Passed:           196
-Failed:             0
-Skipped:            0
-Pass rate:       100%
-Wall clock:     ~6.9 s   (≈ 4.7 s of this is the intentional 10k-token stress query, STRESS 5)
+Command:         npm test --prefix backend  (from repository root)
+Test files:       21
+Total tests:     217
+Passed:          217
+Failed:            0
+Cancelled:         0
+Skipped:           0
+Pass rate:      100%
+Runner duration: 14.640 s
 ```
+
+This includes **21 added regression tests**: 17 in `prRegression.test.js` and 4 in `edgeWorker.test.js`. Counts include the server lifecycle parent test and its 9 subtests. Durations are observations from this run, not performance guarantees.
+
+The suite exercises a generated catalog, synthetic AI provider responses, MongoDB model/collection fixtures, an HTTP server, and a simulated Worker Cache API. It does **not** verify a live Atlas cluster, real AI providers, or a deployed Cloudflare Worker. Live Atlas verification requires a configured compatible database.
 
 ### Coverage by suite
 
 | Suite | Tests | Status | Verification focus |
 |:---|:---:|:---:|:---|
 | `textNlp.test.js` | 12 | ✅ | Singularisation (`-ies`, `-shes`, `-ches`, `-xes`, irregulars), general and domain stopwords, token normalisation (internal hyphens preserved) |
-| `memoryGraph.test.js` | 10 | ✅ | Asymmetric hyponym/hypernym weights, symmetric relations, self-loop pruning, 1..6 clamp, rebuild and init |
+| `memoryGraph.test.js` | 14 | ✅ | Asymmetric hyponym/hypernym weights, symmetric relations, self-loop pruning, 1..6 clamp, rebuild and init |
 | `semanticDijkstra.test.js` | 15 | ✅ | PoS penalties (15 / 6 / 1), Dial buckets, hop friction, cost and hop cutoffs, LCS typo tiers (≥0.80, 0.55–0.80) |
 | `searchBufferCache.test.js` | 8 | ✅ | LRU ordering, TTL expiry, hit promotion, generation-based invalidation |
 | `wallpaperDTO.test.js` | 8 | ✅ | Strips internal and sensitive fields, safe category projection, URL fallbacks |
 | `visibilityFilter.test.js` | 5 | ✅ | Draft rejection, deletion-pending exclusion, publish-date gating |
 | `searchRanking.test.js` | 12 | ✅ | Field weights, compound pipeline with `minimumShouldMatch: 1`, fuzzy autocomplete, `$text` failover |
 | `wallpaperService.test.js` | 10 | ✅ | Multi-page traversal with zero duplicates, prefetch threshold, jump pages, device-isolated partitions |
-| `aiGraphService.test.js` | 10 | ✅ | Prompt structure, edge sanitisation, weight clamping, provider failover, safe draft fallback |
+| `aiGraphService.test.js` | 14 | ✅ | Prompt structure, edge sanitisation, weight clamping, provider failover, safe draft fallback |
 | `draftWorkerLifecycle.test.js` | 10 | ✅ | Backoff progression, atomic job claiming, retry publication, 10-attempt ceiling, edit hooks |
 | `latencyMetrics.test.js` | 8 | ✅ | Latency SLA regression gates over a 10,000-word search space |
-| `highPerfSearch.test.js` | **9** | ✅ | TypedArray layout, K-cap, live-vs-precomputed parity, singleflight, session deduplication, single-fetch pagination, relevance cutoff, key normalisation, bitmask/popcount, typo cache identity, typo budget, incremental 2-hop refresh |
-| `stress.test.js` | **5** | ✅ | 10k-word index build, sustained expansion rate, 2k-way coalescing, 3k concurrent sessions, 10k-token adversarial query plus typo storm |
-| `server.test.js` | **9** | ✅ | Full HTTP integration: health endpoint, search with query, pagination via sessionId, 400 on missing query, 404 on unknown route, deviceType filtering, custom limit, response headers |
-| `mockAtlasData.test.js` | **9** | ✅ | 10k catalog generation (schema fields, unique IDs, token index integrity), Atlas simulator scoring, deviceType filter, excludeIds, DTO projection on results |
-| `singleflight.test.js` | **5** | ✅ | Error propagation to all waiters, independent key isolation, key reuse after completion, pending count accuracy, synchronous value coalescing |
-| `neighborIndex.test.js` | **13** | ✅ | size/has/byteLength properties, neighbors (self, unknown word), expand (empty, multi-word, custom limit, cost ordering), build chaining, capacity doubling, resolveDocIds multi-word score aggregation |
-| `progressiveSearch.test.js` | **11** | ✅ | searchKey edge cases (null, falsy, whitespace), exported constants, empty pool in legacy and ID-first mode, custom batchSize, session isolation, doc reordering, session introspection |
-| `edgeCases.test.js` | **17** | ✅ | Lifecycle cache invalidation, expandQuerySemantically edge cases (empty, unknown, multi-word, TOP_TERMS cap), charMask/popcount boundaries, analyzeQuery hyphens and emoji, normalizeTokenStrict, dataset generator validation |
+| `highPerfSearch.test.js` | 13 | ✅ | TypedArray layout, K-cap, live-vs-precomputed parity, singleflight, session deduplication, single-fetch pagination, relevance cutoff, key normalisation, bitmask/popcount, typo cache identity, typo budget, incremental 2-hop refresh |
+| `stress.test.js` | 5 | ✅ | 10k-word index build, sustained expansion rate, 2k-way coalescing, 3k concurrent sessions, 10k-token adversarial query plus typo storm |
+| `server.test.js` | 10 | ✅ | Full HTTP integration: health endpoint, search with query, pagination via sessionId, 400 on missing query, 404 on unknown route, deviceType filtering, custom limit, response headers |
+| `mockAtlasData.test.js` | 9 | ✅ | 10k catalog generation (schema fields, unique IDs, token index integrity), Atlas simulator scoring, deviceType filter, excludeIds, DTO projection on results |
+| `singleflight.test.js` | 5 | ✅ | Error propagation to all waiters, independent key isolation, key reuse after completion, pending count accuracy, synchronous value coalescing |
+| `neighborIndex.test.js` | 12 | ✅ | size/has/byteLength properties, neighbors (self, unknown word), expand (empty, multi-word, custom limit, cost ordering), build chaining, capacity doubling, resolveDocIds multi-word score aggregation |
+| `progressiveSearch.test.js` | 10 | ✅ | searchKey edge cases (null, falsy, whitespace), exported constants, empty pool in legacy and ID-first mode, custom batchSize, session isolation, doc reordering, session introspection |
+| `edgeCases.test.js` | 16 | ✅ | Lifecycle cache invalidation, expandQuerySemantically edge cases (empty, unknown, multi-word, TOP_TERMS cap), charMask/popcount boundaries, analyzeQuery hyphens and emoji, normalizeTokenStrict, dataset generator validation |
+| `prRegression.test.js` | 17 | ✅ | Complete pagination, hydration retries, concurrent sessions, semantic retrieval, live visibility, model registration, partial expansion persistence, draft retries, persisted unlinking, backfill accounting, totals, and HTTP input/error boundaries |
+| `edgeWorker.test.js` | 4 | ✅ | Private continuation sessions, caching complete results without session sharing, ignoring obsolete cached pages, and forwarding non-JSON responses |
 
-### Stress test results (10,000-word synthetic graph, ~30k directed edges)
+### Stress test results (10,000-word synthetic graph)
 
-| ID | Scenario | Assertion | Observed | Result |
-|:---:|:---|:---|:---|:---:|
-| S1 | Build `NeighborIndex` (K=15) over 10k words | build < 3,000 ms, every node ≤ 15 neighbors | **~112 ms** | ✅ |
-| S2 | 5,000 sequential `expand()` calls across the vocabulary | > 1,000 expansions/s | **> 15,000 /s** (5k in < 325 ms wall-clock, index build included) | ✅ |
-| S3 | **2,000 concurrent identical searches** | exactly **1** pool fetch, all callers get 20 rows, no leaked in-flight keys | **1 fetch**, 2,000 × 20 rows, `pending = 0` | ✅ |
-| S4 | **3,000 concurrent users × 3 pages** (9,000 searches) | unique session ids, zero duplicates per session, > 1,000 searches/s | **3,000 unique sessions, 0 duplicates, > 30,000 searches/s** | ✅ |
-| S5 | 10,000-token query + 1,000 repeated typo lookups | completes < 10 s, typo result identity-stable (cached) | **~4.5 s** cold worst case, 1,000/1,000 cache hits | ✅ |
+These results are from the same 217-test run above. **Test duration** is the Node test runner's duration for the entire test, including fixtures and assertions; it is not an isolated operation latency or a throughput measurement.
+
+| ID | Scenario | Passing assertions | Test duration (ms) | Result |
+|:---:|:---|:---|---:|:---:|
+| S1 | Build `NeighborIndex` (K=15) over 10k words | Internal build < 3,000 ms; sampled nodes have ≤ 15 neighbors | 191.14 | ✅ |
+| S2 | 5,000 sequential `expand()` calls across the vocabulary | > 1,000 expansions/s; each expansion returns terms | 679.91 | ✅ |
+| S3 | 2,000 concurrent identical searches | Exactly 1 pool fetch; every caller gets 20 rows; `pending = 0` | 443.05 | ✅ |
+| S4 | 3,000 concurrent users × 3 pages (9,000 searches) | 3,000 unique session IDs; zero duplicates; > 1,000 searches/s | 677.76 | ✅ |
+| S5 | 10,000-token query + 1,000 repeated typo lookups | Internal expansion < 10 s; repeated typo lookups return the same cached result | 8,374.51 | ✅ |
 
 > [!NOTE]
-> S5 is an intentionally adversarial input: a single query containing all 10,000 words of the vocabulary. It runs the **live** `expandQuerySemantically` path, not the precomputed index, and it is the one test that dominates suite wall-clock time. Real queries are 1–6 tokens. The API layer should also enforce a query-length limit.
+> S5 calls the traversal-based `expandQuerySemantically` function directly with all 10,000 vocabulary words. Its full test duration accounts for about 8.37 s of the 14.64 s suite run. The HTTP API rejects queries longer than 500 characters or 20 whitespace-delimited tokens.
 
 ---
 
 ## Performance & Load Testing
 
 ### Benchmark scope & methodology
+
+The concurrency ladder, HTTP load, and component micro-benchmark tables below retain their previously recorded measurements. They were not rerun during the 217-test verification above; their runtimes and fixture setup differ from that verification run.
 
 | Parameter | Value |
 |:---|:---|
@@ -237,7 +251,7 @@ Wall clock:     ~6.9 s   (≈ 4.7 s of this is the intentional 10k-token stress 
 | Database I/O | Mocked in-memory `fetchPool` (100 rows) to isolate application-layer cost |
 
 > [!WARNING]
-> Because the database is mocked, these numbers measure the **engine's own overhead**: NLP, expansion, coalescing, sessions and slicing. Real deployments add the Atlas round-trip (typically single-digit to tens of milliseconds) **once per new session**. Subsequent pages remain in memory. Equivalent queries that hit the Cloudflare edge never reach the origin.
+> Because the database is mocked, these numbers measure the **engine's own overhead**: NLP, expansion, coalescing, sessions and slicing. Live mode ranks the initial pool through Atlas and hydrates each page from MongoDB to recheck visibility. Those database round trips are not measured by the in-process ladder. The edge worker caches only complete result sets and bypasses caching for responses that need continuation sessions.
 
 ### Concurrency ladder (1k → 20k concurrent searches)
 
@@ -328,7 +342,7 @@ These are per-function latencies from [`scripts/benchmark-10k.js`](./backend/scr
 ```bash
 cd backend
 
-npm test                              # full suite: unit + SLA + high-perf + stress (196 tests)
+npm test                              # full suite: unit + integration + SLA + stress (217 tests)
 node --test test/stress.test.js       # stress scenarios only
 npm run benchmark                     # component micro-benchmarks -> test-metrics-10k.json
 node --expose-gc scripts/concurrency-ladder.js   # 1k -> 20k ladder -> concurrency-ladder-results.json
@@ -389,7 +403,7 @@ npm run test:load
 
 ### Search Relevance Results
 
-Measured against a 25-query golden set (K = 10) using the 10k mock Atlas catalog.
+Reverified on **2026-10-20**, against the same commit and Node.js v24.21.0 runtime as the 217-test run, with `npm run test:relevance --prefix backend`. The 25-query golden set (K = 10) uses the 10k mock Atlas catalog. Results match the [existing relevance snapshot](./backend/benchmark-comparison/2026-10-20/relevance-after.json).
 
 | Metric | Score |
 |:---|:---:|
@@ -408,7 +422,7 @@ Measured against a 25-query golden set (K = 10) using the 10k mock Atlas catalog
 | Typo tolerance (5) | 0.44 | 0.71 | 0.77 |
 
 > [!NOTE]
-> Typo queries score lower because min-cost aggregation lets the +1/+2 typo-inherited neighbors compete equally with the corrected word. Possible follow-up: give the matched dictionary word a cost-0 slot ahead of its inherited neighbors.
+> The weakest query is `wizrd` (P@10 = 0.30); `samuari` is rated OKAY. These limitations are also present in the existing snapshot. Typo queries score lower because min-cost aggregation lets the +1/+2 typo-inherited neighbors compete equally with the corrected word. Possible follow-up: give the matched dictionary word a cost-0 slot ahead of its inherited neighbors.
 
 Raw relevance snapshots are saved in [`backend/relevance-results/`](./backend/relevance-results/). Use `npm run test:relevance -- --save <name>` and `--compare <name>` to track changes over time.
 
@@ -461,20 +475,22 @@ EclipseSearch/
     │   │   └── wallpaperDTO.js             # Client-safe projection
     │   └── workers/
     │       └── draftRetryWorker.js         # Exponential-backoff retry worker
-    └── test/                               # 19 files · 196 tests
-        ├── aiGraphService.test.js          (10)
+    └── test/                               # 21 files · 217 tests
+        ├── aiGraphService.test.js          (14)
         ├── draftWorkerLifecycle.test.js    (10)
-        ├── edgeCases.test.js              (17)
-        ├── highPerfSearch.test.js          (9)
+        ├── edgeCases.test.js              (16)
+        ├── edgeWorker.test.js             (4)
+        ├── highPerfSearch.test.js          (13)
         ├── latencyMetrics.test.js          (8)
-        ├── memoryGraph.test.js             (10)
+        ├── memoryGraph.test.js             (14)
         ├── mockAtlasData.test.js           (9)
-        ├── neighborIndex.test.js           (13)
-        ├── progressiveSearch.test.js       (11)
+        ├── neighborIndex.test.js           (12)
+        ├── prRegression.test.js            (17)
+        ├── progressiveSearch.test.js       (10)
         ├── searchBufferCache.test.js       (8)
         ├── searchRanking.test.js           (12)
         ├── semanticDijkstra.test.js        (15)
-        ├── server.test.js                  (9)
+        ├── server.test.js                  (10)
         ├── singleflight.test.js            (5)
         ├── stress.test.js                  (5)
         ├── textNlp.test.js                 (12)
