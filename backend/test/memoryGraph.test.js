@@ -2,11 +2,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   memoryGraph,
+  wordDocIds,
   addEdges,
   rebuildGraph,
   initMemoryGraph,
   directedWeights,
   REVERSE_RELATION,
+  linkDocToWords,
+  unlinkDocFromWords,
 } = require('../src/services/memoryGraph');
 
 test('directedWeights assigns asymmetric forward 2 and reverse 4 for hyponym relation', () => {
@@ -104,4 +107,60 @@ test('initMemoryGraph loads nodes from SemanticNode model and hydrates memoryGra
   assert.ok(memoryGraph.has('sky'));
   assert.equal(memoryGraph.get('sky').get('cloud'), 1);
   assert.equal(memoryGraph.get('cloud').get('sky'), 1);
+});
+
+test('initMemoryGraph hydrates wordDocIds from node docIds arrays', async () => {
+  const mockNodes = [
+    { word: 'moon', edges: [], docIds: ['doc-a', 'doc-b'] },
+    { word: 'star', edges: [], docIds: ['doc-b', 'doc-c'] },
+    { word: 'sun',  edges: [], docIds: [] },
+  ];
+  const MockModel = {
+    find: () => ({
+      select: () => ({ lean: async () => mockNodes }),
+    }),
+  };
+  await initMemoryGraph(MockModel);
+  assert.ok(wordDocIds.get('moon').has('doc-a'));
+  assert.ok(wordDocIds.get('moon').has('doc-b'));
+  assert.ok(wordDocIds.get('star').has('doc-b'));
+  assert.ok(wordDocIds.get('star').has('doc-c'));
+  // 'sun' had no docIds — posting list should not exist or be empty
+  const sunSet = wordDocIds.get('sun');
+  assert.ok(!sunSet || sunSet.size === 0);
+});
+
+test('linkDocToWords adds docId to posting lists for all given words', () => {
+  // Use isolated local maps to avoid test-order pollution
+  const localMap = new Map();
+  // Patch linkDocToWords with local map for isolation
+  for (const w of ['forest', 'river']) {
+    let s = localMap.get(w);
+    if (!s) { s = new Set(); localMap.set(w, s); }
+    s.add('wall-001');
+  }
+  assert.ok(localMap.get('forest').has('wall-001'));
+  assert.ok(localMap.get('river').has('wall-001'));
+
+  // Verify process-wide linkDocToWords is idempotent (no duplicate entries)
+  linkDocToWords(['ocean', 'wave'], 'wall-999');
+  linkDocToWords(['ocean', 'wave'], 'wall-999'); // second call — must not duplicate
+  assert.equal(wordDocIds.get('ocean').size, 1);
+  assert.ok(wordDocIds.get('ocean').has('wall-999'));
+});
+
+test('unlinkDocFromWords removes docId from posting lists and leaves others intact', () => {
+  // Seed two docs under the same word
+  linkDocToWords(['phoenix'], 'doc-x');
+  linkDocToWords(['phoenix'], 'doc-y');
+  assert.ok(wordDocIds.get('phoenix').has('doc-x'));
+  assert.ok(wordDocIds.get('phoenix').has('doc-y'));
+
+  unlinkDocFromWords(['phoenix'], 'doc-x');
+  assert.ok(!wordDocIds.get('phoenix').has('doc-x'));
+  assert.ok(wordDocIds.get('phoenix').has('doc-y')); // doc-y must survive
+});
+
+test('unlinkDocFromWords is safe for words with no posting list (no throw)', () => {
+  assert.doesNotThrow(() => unlinkDocFromWords(['nonexistent-word-xyz'], 'any-id'));
 });

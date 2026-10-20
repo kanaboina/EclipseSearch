@@ -2,6 +2,7 @@ const {
   singleSourceBoundedDijkstra, analyzeQuery, boostFor, findClosestWordByNormalizedLCS,
   TOP_TERMS, MAX_HOPS, MAX_TYPO_TOKENS,
 } = require('./semanticDijkstra');
+const { wordDocIds: defaultWordDocIds } = require('./memoryGraph');
 
 const K = 20;
 
@@ -156,6 +157,44 @@ class NeighborIndex {
     }
     terms.sort((a, b) => a.cost - b.cost || (a.term < b.term ? -1 : 1));
     return { tokens, terms: terms.slice(0, limit) };
+  }
+  /**
+   * Resolve a search query directly to ranked document IDs using the in-memory
+   * inverted index (wordDocIds). No DB round trip — returns unique document IDs
+   * weighted by semantic proximity to the query.
+   *
+   * Algorithm:
+   *   1. Expand query via precomputed neighbor lists (O(1) per token).
+   *   2. For each term, look up its posting list in `wordDocIds`.
+   *   3. Accumulate a per-docId score (sum of boost values for each matching term).
+   *   4. Sort descending by score, return top `limit` entries as [{docId, score}].
+   *
+   * @param {string}  q             - raw search query
+   * @param {Map}     [docIds]      - wordDocIds map (defaults to in-memory process-wide map)
+   * @param {number}  [limit=200]   - max results to return
+   * @returns {{ docIds: {docId: string, score: number}[], tokens: object[], terms: object[] }}
+   */
+  resolveDocIds(q, docIds = defaultWordDocIds, limit = 200) {
+    const { tokens, terms } = this.expand(q);
+    if (!terms.length) return { docIds: [], tokens, terms };
+
+    // Accumulate score per document ID across all matching terms.
+    const scoreMap = new Map();
+    for (const { term, boost } of terms) {
+      const posting = docIds.get(term);
+      if (!posting || !posting.size) continue;
+      for (const id of posting) {
+        const cur = scoreMap.get(id);
+        scoreMap.set(id, (cur || 0) + boost);
+      }
+    }
+
+    // Sort by score descending, then docId ascending for determinism.
+    const ranked = [];
+    for (const [docId, score] of scoreMap) ranked.push({ docId, score });
+    ranked.sort((a, b) => b.score - a.score || (a.docId < b.docId ? -1 : 1));
+
+    return { docIds: ranked.slice(0, limit), tokens, terms };
   }
 }
 

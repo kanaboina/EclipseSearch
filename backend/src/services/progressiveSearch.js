@@ -10,16 +10,29 @@ const MIN_BOOST = 2; // relevance cutoff on term boost: below this, stop paginat
 const searchKey = (q) => String(q || '').trim().toLowerCase().split(/\s+/).filter(Boolean).sort().join(' ');
 
 /**
- * Batched progressive pagination.
- *  - Batch 1: expand query via precomputed neighbors, fetch a ranked pool once, return top 20.
- *  - Next batches: slice the same in-memory ranked pool (no further DB hits).
- *  - Sessions live in an lru-cache holding a Set of seenIds (O(1) duplicate checks, 15 min TTL).
+ * Batched progressive pagination with direct document-ID resolution.
  *
- * fetchPool({ terms, deviceType, limit }) -> ranked rows ({_id, score?, ...}).
+ * Two operating modes depending on what is provided:
+ *
+ *  A) **ID-first mode** (preferred): `resolvePool` is supplied.
+ *     - Batch 1: expand query → collect ranked [{docId, score}] from the in-memory
+ *       inverted index, store only IDs in the session.
+ *     - Each batch: fetch full documents for the next `batchSize` IDs via a single
+ *       `$in` query (`fetchDocs`).  No full-pool DB hit; no re-ranking of fetched docs.
+ *
+ *  B) **Legacy mode**: `fetchPool` is supplied (original behavior).
+ *     - Batch 1: fetch a ranked pool of full rows, return slices from memory.
+ *     - Sessions live in an lru-cache holding a Set of seenIds (O(1) dup check, 15 min TTL).
+ *
+ * `resolvePool({ terms, deviceType, limit })` → [{ docId, score }]   (ID-first)
+ * `fetchPool({ terms, deviceType, limit })`   → ranked rows           (legacy)
+ * `fetchDocs({ ids, deviceType })`            → full wallpaper rows   (ID-first)
  */
 function createProgressiveSearch({
   index,
-  fetchPool,
+  resolvePool,   // ID-first: (q) -> [{docId, score}]
+  fetchDocs,     // ID-first: ({ids}) -> wallpaper rows by $in
+  fetchPool,     // legacy: ({terms, deviceType, limit, rawTokens}) -> rows
   sessions = new LRUCache({ max: 5000, ttl: 1000 * 60 * 15 }),
   singleflight = createSingleflight(),
   batchSize = BATCH_SIZE,
@@ -27,7 +40,25 @@ function createProgressiveSearch({
   minBoost = MIN_BOOST,
   minScoreRatio = 0,
 } = {}) {
-  async function buildSession(q, deviceType) {
+  const idFirstMode = typeof resolvePool === 'function' && typeof fetchDocs === 'function';
+
+  /** Build an ID-first session: ranked docId list in memory, no docs fetched yet. */
+  async function buildIdFirstSession(q, deviceType) {
+    const sfKey = `ids:${searchKey(q)}:${deviceType || 'all'}`;
+    const ranked = await singleflight.run(sfKey, () => resolvePool({ q, deviceType, limit: poolSize }));
+    return {
+      mode: 'id-first',
+      // ranked: [{ docId, score }] — only IDs stored in session
+      ranked,
+      cursor: 0,
+      seenIds: new Set(),
+      q,
+      deviceType,
+    };
+  }
+
+  /** Build a legacy session: fetch full pool once, slice from memory. */
+  async function buildLegacySession(q, deviceType) {
     const { terms, tokens } = index.expand(q);
     const relevant = terms.filter((t) => t.boost >= minBoost);
     const rawTokens = (tokens || []).map((t) => t.word);
@@ -38,17 +69,44 @@ function createProgressiveSearch({
     const topScore = rows.length && typeof rows[0].score === 'number' ? rows[0].score : null;
     const cutoff = topScore && minScoreRatio > 0 ? topScore * minScoreRatio : null;
     const ranked = cutoff === null ? rows : rows.filter((r) => r.score >= cutoff);
-    return { ranked, cursor: 0, seenIds: new Set(), q, deviceType };
+    return { mode: 'legacy', ranked, cursor: 0, seenIds: new Set(), q, deviceType };
   }
 
   async function search({ q, sessionId, limit = batchSize, deviceType } = {}) {
     let id = sessionId;
     let session = id ? sessions.get(id) : undefined;
+
     if (!session) {
-      session = await buildSession(q, deviceType);
+      session = idFirstMode
+        ? await buildIdFirstSession(q, deviceType)
+        : await buildLegacySession(q, deviceType);
       id = randomUUID();
       sessions.set(id, session);
     }
+
+    if (session.mode === 'id-first') {
+      // Collect the next `limit` unseen docIds from the ranked list.
+      const idBatch = [];
+      while (idBatch.length < limit && session.cursor < session.ranked.length) {
+        const { docId } = session.ranked[session.cursor++];
+        if (!session.seenIds.has(docId)) {
+          session.seenIds.add(docId);
+          idBatch.push(docId);
+        }
+      }
+      const hasMore = session.cursor < session.ranked.length;
+
+      // Hydrate the IDs into full documents in a single batched $in query.
+      const docs = idBatch.length ? await fetchDocs({ ids: idBatch, deviceType }) : [];
+
+      // Re-order docs to match the ranking order of idBatch (fetchDocs may return in any order).
+      const byId = new Map(docs.map((d) => [String(d._id), d]));
+      const ordered = idBatch.map((id) => byId.get(id)).filter(Boolean);
+
+      return { sessionId: id, data: ordered, hasMore };
+    }
+
+    // Legacy mode: slice ranked pool.
     const items = [];
     while (items.length < limit && session.cursor < session.ranked.length) {
       const row = session.ranked[session.cursor++];

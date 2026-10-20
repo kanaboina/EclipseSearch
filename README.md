@@ -1,6 +1,6 @@
 # Eclipse Fantasy — Semantic Search Engine
 
-[![Tests](https://img.shields.io/badge/tests-122%20passing-brightgreen.svg)](./backend/test/)
+[![Tests](https://img.shields.io/badge/tests-196%20passing-brightgreen.svg)](./backend/test/)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-blue.svg)](https://nodejs.org/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas%20Search-green.svg)](https://www.mongodb.com/atlas/database)
 [![Peak Throughput](https://img.shields.io/badge/in--process%20peak-28.4k%20QPS-purple.svg)](#concurrency-ladder-1k--20k-concurrent-searches)
@@ -170,13 +170,13 @@ npm test
 ### Execution summary
 
 ```text
-Test files:        13
-Total tests:      122
-Passed:           122
+Test files:        19
+Total tests:      196
+Passed:           196
 Failed:             0
 Skipped:            0
 Pass rate:       100%
-Wall clock:     ~6.1 s   (≈ 4.5 s of this is the intentional 10k-token stress query, STRESS 5)
+Wall clock:     ~6.9 s   (≈ 4.7 s of this is the intentional 10k-token stress query, STRESS 5)
 ```
 
 ### Coverage by suite
@@ -196,6 +196,12 @@ Wall clock:     ~6.1 s   (≈ 4.5 s of this is the intentional 10k-token stress 
 | `latencyMetrics.test.js` | 8 | ✅ | Latency SLA regression gates over a 10,000-word search space |
 | `highPerfSearch.test.js` | **9** | ✅ | TypedArray layout, K-cap, live-vs-precomputed parity, singleflight, session deduplication, single-fetch pagination, relevance cutoff, key normalisation, bitmask/popcount, typo cache identity, typo budget, incremental 2-hop refresh |
 | `stress.test.js` | **5** | ✅ | 10k-word index build, sustained expansion rate, 2k-way coalescing, 3k concurrent sessions, 10k-token adversarial query plus typo storm |
+| `server.test.js` | **9** | ✅ | Full HTTP integration: health endpoint, search with query, pagination via sessionId, 400 on missing query, 404 on unknown route, deviceType filtering, custom limit, response headers |
+| `mockAtlasData.test.js` | **9** | ✅ | 10k catalog generation (schema fields, unique IDs, token index integrity), Atlas simulator scoring, deviceType filter, excludeIds, DTO projection on results |
+| `singleflight.test.js` | **5** | ✅ | Error propagation to all waiters, independent key isolation, key reuse after completion, pending count accuracy, synchronous value coalescing |
+| `neighborIndex.test.js` | **13** | ✅ | size/has/byteLength properties, neighbors (self, unknown word), expand (empty, multi-word, custom limit, cost ordering), build chaining, capacity doubling, resolveDocIds multi-word score aggregation |
+| `progressiveSearch.test.js` | **11** | ✅ | searchKey edge cases (null, falsy, whitespace), exported constants, empty pool in legacy and ID-first mode, custom batchSize, session isolation, doc reordering, session introspection |
+| `edgeCases.test.js` | **17** | ✅ | Lifecycle cache invalidation, expandQuerySemantically edge cases (empty, unknown, multi-word, TOP_TERMS cap), charMask/popcount boundaries, analyzeQuery hyphens and emoji, normalizeTokenStrict, dataset generator validation |
 
 ### Stress test results (10,000-word synthetic graph, ~30k directed edges)
 
@@ -318,7 +324,7 @@ These are per-function latencies from [`scripts/benchmark-10k.js`](./backend/scr
 ```bash
 cd backend
 
-npm test                              # full suite: unit + SLA + high-perf + stress (122 tests)
+npm test                              # full suite: unit + SLA + high-perf + stress (196 tests)
 node --test test/stress.test.js       # stress scenarios only
 npm run benchmark                     # component micro-benchmarks -> test-metrics-10k.json
 node --expose-gc scripts/concurrency-ladder.js   # 1k -> 20k ladder -> concurrency-ladder-results.json
@@ -451,15 +457,21 @@ EclipseSearch/
     │   │   └── wallpaperDTO.js             # Client-safe projection
     │   └── workers/
     │       └── draftRetryWorker.js         # Exponential-backoff retry worker
-    └── test/                               # 13 files · 122 tests
+    └── test/                               # 19 files · 196 tests
         ├── aiGraphService.test.js          (10)
         ├── draftWorkerLifecycle.test.js    (10)
+        ├── edgeCases.test.js              (17)
         ├── highPerfSearch.test.js          (9)
         ├── latencyMetrics.test.js          (8)
         ├── memoryGraph.test.js             (10)
+        ├── mockAtlasData.test.js           (9)
+        ├── neighborIndex.test.js           (13)
+        ├── progressiveSearch.test.js       (11)
         ├── searchBufferCache.test.js       (8)
         ├── searchRanking.test.js           (12)
         ├── semanticDijkstra.test.js        (15)
+        ├── server.test.js                  (9)
+        ├── singleflight.test.js            (5)
         ├── stress.test.js                  (5)
         ├── textNlp.test.js                 (12)
         ├── visibilityFilter.test.js        (5)

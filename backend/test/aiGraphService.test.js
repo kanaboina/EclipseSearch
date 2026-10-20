@@ -5,8 +5,10 @@ const {
   sanitizeExpansions,
   callLlmWithFallback,
   findUnseenWords,
+  linkWallpaperToGraph,
   processWallpaperSemanticsOnUpload,
 } = require('../src/services/aiGraphService');
+const { wordDocIds } = require('../src/services/memoryGraph');
 
 test('buildPrompt formats LLM prompt with required word list and relation types', () => {
   const prompt = buildPrompt(['fenrir', 'valkyrie']);
@@ -166,3 +168,78 @@ test('processWallpaperSemanticsOnUpload falls back to draft status when AI provi
   assert.ok(result.unprocessedWords.length > 0);
   assert.ok(result.error);
 });
+
+test('linkWallpaperToGraph calls bulkWrite with $addToSet and updates in-memory wordDocIds', async () => {
+  const writtenOps = [];
+  const MockModel = {
+    bulkWrite: async (ops) => { writtenOps.push(...ops); },
+  };
+
+  await linkWallpaperToGraph('wallpaper-abc', ['nebula', 'cosmos'], { Model: MockModel });
+
+  // DB: each word should have an $addToSet on docIds
+  assert.equal(writtenOps.length, 2);
+  assert.deepEqual(writtenOps[0].updateOne.update.$addToSet, { docIds: 'wallpaper-abc' });
+  assert.equal(writtenOps[0].updateOne.filter.word, 'nebula');
+
+  // In-memory: wordDocIds must reflect the link
+  assert.ok(wordDocIds.get('nebula').has('wallpaper-abc'));
+  assert.ok(wordDocIds.get('cosmos').has('wallpaper-abc'));
+});
+
+test('linkWallpaperToGraph is idempotent — bulkWrite $addToSet prevents duplicates in DB', async () => {
+  const writtenBatches = [];
+  const MockModel = {
+    bulkWrite: async (ops) => { writtenBatches.push(ops.length); },
+  };
+  await linkWallpaperToGraph('wall-dup', ['aurora'], { Model: MockModel });
+  await linkWallpaperToGraph('wall-dup', ['aurora'], { Model: MockModel }); // second call same ID
+  // Both DB calls should go through (DB deduplication via $addToSet)
+  assert.equal(writtenBatches.length, 2);
+  // In-memory: Set guarantees no duplicates regardless
+  assert.equal(wordDocIds.get('aurora').size, 1);
+});
+
+test('linkWallpaperToGraph is a no-op when docId or words are missing', async () => {
+  let called = false;
+  const MockModel = { bulkWrite: async () => { called = true; } };
+  await linkWallpaperToGraph('', ['dragon'], { Model: MockModel });
+  await linkWallpaperToGraph('some-id', [], { Model: MockModel });
+  assert.equal(called, false); // bulkWrite must not be called for empty inputs
+});
+
+test('processWallpaperSemanticsOnUpload links wallpaperId to words when _id is present', async () => {
+  const linkedOps = [];
+  const MockModel = {
+    find: () => ({ select: () => ({ lean: async () => [] }) }),
+    bulkWrite: async (ops) => { linkedOps.push(...ops); },
+  };
+  // Provider that returns expansions for whatever words are given to it
+  const okProviders = [{
+    name: 'mock',
+    call: async (prompt) => {
+      // Extract word list from the prompt JSON and return an expansion for each
+      const match = prompt.match(/Words:\s*(\[.*?\])/s);
+      const words = match ? JSON.parse(match[1]) : ['phoenix'];
+      const expansions = {};
+      for (const w of words) {
+        expansions[w] = [{ target: 'firebird', weight: 1, relation: 'synonym' }];
+      }
+      return JSON.stringify({ expansions });
+    },
+  }];
+
+  const result = await processWallpaperSemanticsOnUpload(
+    { _id: 'wall-999', title: 'Phoenix Rising' },
+    'published',
+    { Model: MockModel, providers: okProviders }
+  );
+
+  assert.equal(result.status, 'published');
+  // bulkWrite must have been called to link the wallpaper's words
+  assert.ok(linkedOps.length > 0);
+  // Every $addToSet op must include the wallpaperId
+  const linkOps = linkedOps.filter((op) => op.updateOne.update.$addToSet);
+  assert.ok(linkOps.every((op) => op.updateOne.update.$addToSet.docIds === 'wall-999'));
+});
+

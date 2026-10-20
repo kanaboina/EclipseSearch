@@ -8,6 +8,7 @@ const { createSingleflight } = require('./services/singleflight');
 const { createProgressiveSearch, searchKey } = require('./services/progressiveSearch');
 const { normalizeToken } = require('./services/textNlp');
 const { fetchSearchBatch, buildAtlasPipeline } = require('./services/searchRanking');
+const { wordDocIds } = require('./services/memoryGraph');
 const { generate10kNodes, generate10kWords, buildPopulatedGraph } = require('../scripts/datasetGenerator');
 const { generate10kCatalog, createAtlasSearchSimulator } = require('./mockAtlasData');
 
@@ -19,18 +20,34 @@ async function setupSearchEngine({ mongoUri = process.env.MONGODB_URI } = {}) {
   const neighborIndex = new NeighborIndex(20).build(graph);
 
   let isAtlasLive = false;
-  let fetchPool = null;
+  let resolvePool = null;
+  let fetchDocs = null;
+  let fetchPool = null; // legacy mock path
 
   if (mongoUri) {
     try {
       await mongoose.connect(mongoUri);
       isAtlasLive = true;
       const Wallpaper = mongoose.models.Wallpaper || mongoose.model('Wallpaper', new mongoose.Schema({}, { strict: false }));
-      fetchPool = async ({ terms, deviceType, limit }) => {
-        // Run aggregation or batch search
-        const expansion = { terms };
-        const pipeline = buildAtlasPipeline({ q: terms.map((t) => t.term).join(' '), deviceType, limit, expansion });
-        return Wallpaper.aggregate(pipeline);
+
+      /**
+       * ID-first path: resolve ranked document IDs directly from the in-memory
+       * inverted index — zero DB round trips for ranking.
+       */
+      resolvePool = async ({ q, deviceType, limit }) => {
+        const { docIds } = neighborIndex.resolveDocIds(q, wordDocIds, limit);
+        return docIds; // [{docId, score}]
+      };
+
+      /**
+       * Hydrate a batch of IDs into full wallpaper documents via a single $in query.
+       * Preserves only published, non-deleted docs; populates category.
+       */
+      fetchDocs = async ({ ids }) => {
+        if (!ids || !ids.length) return [];
+        return Wallpaper.find(
+          { _id: { $in: ids }, status: 'published', deletionPending: { $ne: true } },
+        ).populate('category', 'name slug').lean();
       };
     } catch (err) {
       console.warn(`[Server] Could not connect to Atlas (${err.message}). Falling back to 10k mock catalog.`);
@@ -38,6 +55,7 @@ async function setupSearchEngine({ mongoUri = process.env.MONGODB_URI } = {}) {
   }
 
   if (!isAtlasLive) {
+    // Legacy mock path: simulate Atlas search over in-memory 10k catalog.
     const catalog = generate10kCatalog(10000);
     const simulator = createAtlasSearchSimulator(catalog);
     fetchPool = async ({ terms, deviceType, limit, rawTokens = [] }) => {
@@ -50,7 +68,8 @@ async function setupSearchEngine({ mongoUri = process.env.MONGODB_URI } = {}) {
 
   const progressiveSearch = createProgressiveSearch({
     index: neighborIndex,
-    fetchPool,
+    // ID-first mode (Atlas live) — resolvePool + fetchDocs; legacy mock falls back to fetchPool.
+    ...(isAtlasLive ? { resolvePool, fetchDocs } : { fetchPool }),
     sessions,
     singleflight,
     batchSize: 20,

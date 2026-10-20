@@ -1,6 +1,6 @@
 const SemanticNode = require('../models/SemanticNode');
 const AiIngestionJob = require('../models/AiIngestionJob');
-const { memoryGraph, addEdges } = require('./memoryGraph');
+const { memoryGraph, addEdges, linkDocToWords } = require('./memoryGraph');
 const { neighborIndex } = require('./neighborIndex');
 const { extractCleanWords } = require('./textNlp');
 
@@ -169,19 +169,58 @@ async function expandWords(words, deps = {}) {
 }
 
 /**
+ * Persist the document-to-word mapping into the SemanticNode collection
+ * (adds docId to each word's `docIds` posting list, idempotent via $addToSet)
+ * and hot-updates the in-memory wordDocIds map.
+ *
+ * @param {string}   docId  - String _id of the wallpaper document
+ * @param {string[]} words  - normalized words extracted from the wallpaper
+ * @param {object}   [opts]
+ * @param {object}   [opts.Model]  - injectable SemanticNode model (for tests)
+ */
+async function linkWallpaperToGraph(docId, words, { Model = SemanticNode } = {}) {
+  if (!docId || !words.length) return;
+  const id = String(docId);
+  // Upsert each word node and push the docId into its posting list (no duplicates).
+  const ops = words.map((w) => ({
+    updateOne: {
+      filter: { word: w },
+      update: {
+        $addToSet: { docIds: id },
+        $setOnInsert: { word: w },
+      },
+      upsert: true,
+    },
+  }));
+  if (ops.length) await Model.bulkWrite(ops, { ordered: false });
+  // Mirror in-memory.
+  linkDocToWords(words, id);
+}
+
+/**
  * Called after Sharp/R2 upload. Returns the status the wallpaper must be saved with.
  * On AI failure: status 'draft' + AiIngestionJob so assets stay intact and hidden.
  * wallpaperId may be supplied via payload._id (create the job after save if absent;
  * see `queueDraftJob`).
+ *
+ * Always links the wallpaper to its words in the inverted index (even on AI failure)
+ * so that direct document-ID search works immediately after upload.
  */
 async function processWallpaperSemanticsOnUpload(payload, requestedStatus = 'published', deps = {}) {
   const words = extractCleanWords(payload);
+  const wallpaperId = payload._id ? String(payload._id) : null;
   let unseen = [];
   try {
     const res = await expandWords(words, deps);
+    // Link the wallpaper's document ID to all its words in the inverted index.
+    if (wallpaperId) await linkWallpaperToGraph(wallpaperId, words, deps);
     return { status: requestedStatus, unprocessedWords: [], expanded: res.expanded };
   } catch (err) {
     try { unseen = await findUnseenWords(words, deps.Model); } catch (_) { unseen = words; }
+    // Still link the doc so it appears in ID-based results (semantic expansion will be partial).
+    if (wallpaperId) {
+      try { await linkWallpaperToGraph(wallpaperId, words, deps); } catch (_) { /* non-critical */ }
+    }
     return { status: 'draft', unprocessedWords: unseen, error: err.message };
   }
 }
@@ -209,6 +248,7 @@ module.exports = {
   callLlmWithFallback,
   persistExpansionsToGraph,
   expandWords,
+  linkWallpaperToGraph,
   processWallpaperSemanticsOnUpload,
   queueDraftJob,
   defaultProviders,
