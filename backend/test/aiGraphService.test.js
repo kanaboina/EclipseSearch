@@ -90,8 +90,9 @@ test('callLlmWithFallback succeeds on primary provider when valid JSON is return
   ];
 
   const result = await callLlmWithFallback(['wolf'], providers);
-  assert.ok(result.wolf);
-  assert.equal(result.wolf[0].target, 'canine');
+  assert.ok(result.expansions.wolf);
+  assert.equal(result.expansions.wolf[0].target, 'canine');
+  assert.deepEqual(result.missing, []);
 });
 
 test('callLlmWithFallback fails over to secondary provider when primary throws', async () => {
@@ -111,8 +112,9 @@ test('callLlmWithFallback fails over to secondary provider when primary throws',
   ];
 
   const result = await callLlmWithFallback(['sky'], providers);
-  assert.ok(result.sky);
-  assert.equal(result.sky[0].target, 'cloud');
+  assert.ok(result.expansions.sky);
+  assert.equal(result.expansions.sky[0].target, 'cloud');
+  assert.deepEqual(result.missing, []);
 });
 
 test('callLlmWithFallback throws comprehensive error when all providers fail', async () => {

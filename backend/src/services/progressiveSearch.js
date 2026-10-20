@@ -5,6 +5,7 @@ const { createSingleflight } = require('./singleflight');
 const BATCH_SIZE = 20;
 const POOL_SIZE = 200;
 const MIN_BOOST = 2; // relevance cutoff on term boost: below this, stop paginating
+const FETCH_OVERFETCH_RATIO = 1.5; // fetch extra IDs to account for post-query filtering
 
 /** Sorted-token key, mirrors the edge normalization so equal searches coalesce. */
 const searchKey = (q) => String(q || '').trim().toLowerCase().split(/\s+/).filter(Boolean).sort().join(' ');
@@ -73,21 +74,23 @@ function createProgressiveSearch({
   }
 
   async function search({ q, sessionId, limit = batchSize, deviceType } = {}) {
-    let id = sessionId;
-    let session = id ? sessions.get(id) : undefined;
+    // Use client-provided sessionId if given, otherwise generate new one
+    const id = sessionId || randomUUID();
+    let session = sessions.get(id);
 
     if (!session) {
       session = idFirstMode
         ? await buildIdFirstSession(q, deviceType)
         : await buildLegacySession(q, deviceType);
-      id = randomUUID();
       sessions.set(id, session);
     }
 
     if (session.mode === 'id-first') {
       // Collect the next `limit` unseen docIds from the ranked list.
+      // Over-fetch to account for docs that may be filtered out by fetchDocs (e.g., deleted, unpublished)
+      const targetCount = Math.ceil(limit * FETCH_OVERFETCH_RATIO);
       const idBatch = [];
-      while (idBatch.length < limit && session.cursor < session.ranked.length) {
+      while (idBatch.length < targetCount && session.cursor < session.ranked.length) {
         const { docId } = session.ranked[session.cursor++];
         if (!session.seenIds.has(docId)) {
           session.seenIds.add(docId);
@@ -101,9 +104,12 @@ function createProgressiveSearch({
 
       // Re-order docs to match the ranking order of idBatch (fetchDocs may return in any order).
       const byId = new Map(docs.map((d) => [String(d._id), d]));
-      const ordered = idBatch.map((id) => byId.get(id)).filter(Boolean);
+      const ordered = idBatch.map((docId) => byId.get(docId)).filter(Boolean);
 
-      return { sessionId: id, data: ordered, hasMore };
+      // Trim to requested limit
+      const data = ordered.slice(0, limit);
+
+      return { sessionId: id, data, hasMore };
     }
 
     // Legacy mode: slice ranked pool.

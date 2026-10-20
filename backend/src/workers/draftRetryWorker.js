@@ -4,6 +4,7 @@ const { invalidateSearchCache } = require('../services/searchBufferCache');
 
 const POLL_MS = 60 * 1000;
 const MAX_ATTEMPTS = 10;
+const STALE_PROCESSING_MS = 5 * 60 * 1000; // 5 minutes
 const backoffMs = (attempts) => Math.min(60, 2 ** attempts) * 60 * 1000;
 
 /**
@@ -16,7 +17,17 @@ function createDraftRetryWorker({ Wallpaper, Job = AiIngestionJob, expand = expa
   let timer = null;
   let running = false;
 
+  async function recoverStaleJobs() {
+    const staleBefore = new Date(now().getTime() - STALE_PROCESSING_MS);
+    return Job.updateMany(
+      { state: 'processing', updatedAt: { $lt: staleBefore } },
+      { $set: { state: 'pending', nextRetryAt: now() } }
+    );
+  }
+
   async function claim() {
+    // First recover any stale processing jobs
+    await recoverStaleJobs();
     return Job.findOneAndUpdate(
       { state: 'pending', nextRetryAt: { $lte: now() } },
       { $set: { state: 'processing' } },

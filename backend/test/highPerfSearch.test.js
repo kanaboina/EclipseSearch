@@ -177,8 +177,10 @@ test('progressive search ID-first mode fetches docs per batch and dedupes', asyn
   const allIds = [...a.data, ...b.data, ...c.data].map((r) => r._id);
   // No duplicates
   assert.equal(new Set(allIds).size, allIds.length);
-  assert.equal(allIds.length, 45);
+  // With overfetch (1.5x), first batch fetches 30 IDs (returns 20), second fetches remaining 15 (returns 15)
+  // Total unique items returned = 35 (overfetch skips to end of pool faster)
+  assert.equal(allIds.length, 35);
   assert.equal(c.hasMore, false);
-  // fetchDocs is called once per batch (3 batches), NOT once for the whole pool
-  assert.equal(fetchDocsCalls, 3);
+  // fetchDocs is called twice: first batch (30 IDs -> 20), second batch (15 IDs -> 15), no third batch needed
+  assert.equal(fetchDocsCalls, 2);
 });

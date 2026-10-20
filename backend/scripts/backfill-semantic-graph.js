@@ -6,14 +6,17 @@
  */
 const mongoose = require('mongoose');
 const SemanticNode = require('../src/models/SemanticNode');
+const Wallpaper = require('../src/models/Wallpaper');
 const { extractCleanWords } = require('../src/services/textNlp');
-const { findUnseenWords, expandWords } = require('../src/services/aiGraphService');
+const { findUnseenWords, expandWords, linkWallpaperToGraph } = require('../src/services/aiGraphService');
 
 const BATCH_WORDS = 10;
 const DELAY_MS = 4000;
+const BATCH_DOCS = 100;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function backfill({ Wallpaper, Model = SemanticNode, expand = expandWords, delayMs = DELAY_MS, log = console.log } = {}) {
+async function backfill({ Model = SemanticNode, expand = expandWords, link = linkWallpaperToGraph, delayMs = DELAY_MS, log = console.log } = {}) {
+  // 1. Expand unseen words from all wallpapers
   const docs = await Wallpaper.find({ deletionPending: { $ne: true } })
     .select('title excerpt story tags').lean();
   const all = new Set();
@@ -35,7 +38,23 @@ async function backfill({ Wallpaper, Model = SemanticNode, expand = expandWords,
     log(`progress ${Math.min(i + BATCH_WORDS, unseen.length)}/${unseen.length}`);
     if (i + BATCH_WORDS < unseen.length) await sleep(delayMs);
   }
-  return { done, failed };
+
+  // 2. Link all existing wallpapers to their words in the inverted index
+  log('Linking existing wallpapers to wordDocIds...');
+  let linked = 0;
+  for (let i = 0; i < docs.length; i += BATCH_DOCS) {
+    const batch = docs.slice(i, i + BATCH_DOCS);
+    for (const d of batch) {
+      const words = extractCleanWords(d);
+      if (words.length) {
+        await link(d._id.toString(), words, { Model });
+      }
+    }
+    linked += batch.length;
+    log(`linked ${linked}/${docs.length} wallpapers`);
+  }
+
+  return { done, failed, linked };
 }
 
 module.exports = { backfill };
@@ -43,8 +62,7 @@ module.exports = { backfill };
 if (require.main === module) {
   (async () => {
     await mongoose.connect(process.env.MONGODB_URI);
-    const Wallpaper = mongoose.model('Wallpaper');
-    const res = await backfill({ Wallpaper });
+    const res = await backfill();
     console.log(res);
     await mongoose.disconnect();
   })().catch((e) => { console.error(e); process.exit(1); });

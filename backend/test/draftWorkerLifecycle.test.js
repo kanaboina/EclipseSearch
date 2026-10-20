@@ -27,6 +27,7 @@ test('draftRetryWorker claim finds and locks pending jobs with nextRetryAt in pa
       return null;
     },
     updateOne: async () => {},
+    updateMany: async () => ({ modifiedCount: 0 }),
   };
   const mockWallpaper = { updateOne: async () => {} };
 
@@ -130,6 +131,7 @@ test('draftRetryWorker tick processes all available jobs in sequence', async () 
   const mockJobModel = {
     findOneAndUpdate: async () => (call < jobs.length ? jobs[call++] : null),
     updateOne: async () => {},
+    updateMany: async () => ({ modifiedCount: 0 }),
   };
   const mockWallpaper = { updateOne: async () => {} };
 

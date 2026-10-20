@@ -135,9 +135,9 @@ class NeighborIndex {
     let typoBudget = MAX_TYPO_TOKENS;
     const lists = tokens.map((t) => {
       if (this.idOf.has(t.word) || typoBudget <= 0 || !this.graph) return this.neighbors(t.word);
-      typoBudget--;
       const match = findClosestWordByNormalizedLCS(t.word, this.graph); // LRU-cached string match
       if (!match) return this.neighbors(t.word);
+      typoBudget--; // Only consume budget on successful match
       const out = new Map();
       for (const [w, d] of this.neighbors(match.word)) out.set(w, d + match.initialCost);
       return out;

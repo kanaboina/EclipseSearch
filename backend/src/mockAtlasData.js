@@ -61,8 +61,10 @@ function generate10kCatalog(size = 10000) {
     const downloadsCount = Math.floor(views * (0.1 + random() * 0.4));
     const now = Date.now();
 
+    // Generate valid 24-char hex ObjectId-like strings
+    const objectIdHex = (i.toString(16).padStart(24, '0')).slice(-24);
     const doc = {
-      _id: `664${String(i).padStart(21, '0')}`,
+      _id: objectIdHex,
       title,
       slug,
       excerpt: `High-resolution 4k wallpaper depicting ${w1} and ${w2} infused with ${style} ambiance.`,

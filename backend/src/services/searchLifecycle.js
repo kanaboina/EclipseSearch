@@ -1,6 +1,7 @@
 const { extractCleanWords } = require('./textNlp');
 const { expandWords, processWallpaperSemanticsOnUpload } = require('./aiGraphService');
 const { invalidateSearchCache } = require('./searchBufferCache');
+const { unlinkDocFromWords } = require('./memoryGraph');
 
 const SEMANTIC_FIELDS = ['title', 'excerpt', 'story', 'tags'];
 
@@ -8,7 +9,18 @@ const SEMANTIC_FIELDS = ['title', 'excerpt', 'story', 'tags'];
 async function onWallpaperEdited(before, after, requestedStatus, deps) {
   const changed = SEMANTIC_FIELDS.some((f) => JSON.stringify(before?.[f]) !== JSON.stringify(after?.[f]));
   let result = { status: requestedStatus, unprocessedWords: [] };
-  if (changed) result = await processWallpaperSemanticsOnUpload(after, requestedStatus, deps);
+  if (changed) {
+    // Unlink old words that are no longer in the wallpaper
+    const oldWords = new Set(extractCleanWords(before));
+    const newWords = new Set(extractCleanWords(after));
+    const removedWords = Array.from(oldWords).filter((w) => !newWords.has(w));
+    const docId = after._id ? String(after._id) : null;
+    if (docId && removedWords.length) {
+      unlinkDocFromWords(removedWords, docId);
+    }
+    // Process new words (expand and link)
+    result = await processWallpaperSemanticsOnUpload(after, requestedStatus, deps);
+  }
   invalidateSearchCache();
   return result;
 }
