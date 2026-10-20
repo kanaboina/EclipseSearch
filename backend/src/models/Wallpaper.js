@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+require('./Category');
 
 const wallpaperSchema = new mongoose.Schema(
   {

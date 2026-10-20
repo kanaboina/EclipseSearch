@@ -15,9 +15,9 @@ const DELAY_MS = 4000;
 const BATCH_DOCS = 100;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function backfill({ Model = SemanticNode, expand = expandWords, link = linkWallpaperToGraph, delayMs = DELAY_MS, log = console.log } = {}) {
+async function backfill({ Wallpaper: WallpaperModel = Wallpaper, Model = SemanticNode, expand = expandWords, link = linkWallpaperToGraph, delayMs = DELAY_MS, log = console.log } = {}) {
   // 1. Expand unseen words from all wallpapers
-  const docs = await Wallpaper.find({ deletionPending: { $ne: true } })
+  const docs = await WallpaperModel.find({ deletionPending: { $ne: true } })
     .select('title excerpt story tags').lean();
   const all = new Set();
   for (const d of docs) extractCleanWords(d).forEach((w) => all.add(w));
@@ -29,8 +29,10 @@ async function backfill({ Model = SemanticNode, expand = expandWords, link = lin
   for (let i = 0; i < unseen.length; i += BATCH_WORDS) {
     const batch = unseen.slice(i, i + BATCH_WORDS);
     try {
-      await expand(batch);
-      done += batch.length;
+      const result = await expand(batch, { Model });
+      const missing = result?.missing || [];
+      done += batch.length - missing.length;
+      failed.push(...missing);
     } catch (err) {
       failed.push(...batch);
       log(`batch failed (${err.message})`);

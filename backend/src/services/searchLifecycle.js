@@ -1,6 +1,7 @@
 const { extractCleanWords } = require('./textNlp');
 const { expandWords, processWallpaperSemanticsOnUpload } = require('./aiGraphService');
 const { invalidateSearchCache } = require('./searchBufferCache');
+const SemanticNode = require('../models/SemanticNode');
 const { unlinkDocFromWords } = require('./memoryGraph');
 
 const SEMANTIC_FIELDS = ['title', 'excerpt', 'story', 'tags'];
@@ -16,6 +17,11 @@ async function onWallpaperEdited(before, after, requestedStatus, deps) {
     const removedWords = Array.from(oldWords).filter((w) => !newWords.has(w));
     const docId = after._id ? String(after._id) : null;
     if (docId && removedWords.length) {
+      const Model = deps?.Model || SemanticNode;
+      await Model.updateMany(
+        { word: { $in: removedWords } },
+        { $pull: { docIds: docId } }
+      );
       unlinkDocFromWords(removedWords, docId);
     }
     // Process new words (expand and link)

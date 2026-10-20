@@ -36,8 +36,13 @@ function createDraftRetryWorker({ Wallpaper, Job = AiIngestionJob, expand = expa
   }
 
   async function processJob(job) {
+    let remaining = job.unprocessedWords;
     try {
-      await expand(job.unprocessedWords);
+      const result = await expand(remaining);
+      if (result?.missing?.length) {
+        remaining = result.missing;
+        throw new Error(`Missing expansions for: ${remaining.join(', ')}`);
+      }
       await Wallpaper.updateOne({ _id: job.wallpaperId, status: 'draft' }, { $set: { status: 'published' } });
       await Job.updateOne({ _id: job._id }, { $set: { state: 'completed', lastError: null } });
       invalidateSearchCache();
@@ -52,6 +57,7 @@ function createDraftRetryWorker({ Wallpaper, Job = AiIngestionJob, expand = expa
           $set: {
             state: permanent ? 'failed_permanent' : 'pending',
             attempts,
+            unprocessedWords: remaining,
             lastError: err.message,
             nextRetryAt: new Date(now().getTime() + backoffMs(attempts)),
           },

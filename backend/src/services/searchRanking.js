@@ -31,9 +31,9 @@ function buildAtlasPipeline({ q, deviceType, limit = 50, excludeIds = [], now = 
   }
   const support = [];
   for (const { term, boost } of terms) {
-    // Only add to support (should), NOT to primary (must) - prevents double-counting
+    // Semantic primary matches must also qualify documents for retrieval.
     for (const [path, base] of Object.entries(PRIMARY)) {
-      support.push({ text: { query: term, path, score: { boost: { value: Math.max(0.01, boost * (base / 10)) } } } });
+      primary.push({ text: { query: term, path, score: { boost: { value: Math.max(0.01, boost * (base / 10)) } } } });
     }
     support.push({ text: { query: term, path: 'excerpt', score: { boost: { value: 0.5 * boost } } } });
     support.push({ text: { query: term, path: 'style', score: { boost: { value: 0.25 * boost } } } });

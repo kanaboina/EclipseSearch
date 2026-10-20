@@ -121,18 +121,23 @@ function sanitizeExpansions(parsed, words) {
 /** Try each provider in order; returns sanitized expansions (may be partial). */
 async function callLlmWithFallback(words, providers = defaultProviders()) {
   if (!providers.length) throw new Error('No AI providers configured');
-  const prompt = buildPrompt(words);
+  const expansions = {};
+  let missing = words;
+  let responded = false;
   const errors = [];
   for (const p of providers) {
     try {
-      const text = await p.call(prompt);
-      const out = sanitizeExpansions(JSON.parse(text), words);
-      const missing = words.filter((w) => !out[w]);
-      return { expansions: out, missing };
+      const text = await p.call(buildPrompt(missing));
+      const out = sanitizeExpansions(JSON.parse(text), missing);
+      responded = true;
+      Object.assign(expansions, out);
+      missing = missing.filter((w) => !out[w]);
+      if (!missing.length) return { expansions, missing };
     } catch (err) {
       errors.push(`${p.name}: ${err.message}`);
     }
   }
+  if (responded) return { expansions, missing };
   throw new Error(errors.join(' | '));
 }
 
