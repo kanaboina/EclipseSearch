@@ -18,7 +18,7 @@ function toObjectIds(ids) {
  *   excerpt (0.5x) and style (0.25x) only add score.
  * - minimumShouldMatch:1 applies to primary fields only (via `must` wrapper).
  */
-function buildAtlasPipeline({ q, deviceType, limit = 50, excludeIds = [], now = new Date(), expansion } = {}) {
+function buildAtlasPipeline({ q, deviceType, limit = 50, excludeIds = [], now = new Date(), expansion, idsOnly = false } = {}) {
   const { terms } = expansion || neighborIndex.expand(q);
   const rawTokens = String(q || '').toLowerCase().split(/\s+/).map(normalizeToken).filter(Boolean);
 
@@ -50,12 +50,15 @@ function buildAtlasPipeline({ q, deviceType, limit = 50, excludeIds = [], now = 
   const match = { ...publicVisibilityFilter(now) };
   if (excludeIds.length) match._id = { $nin: toObjectIds(excludeIds) };
 
-  return [
+  const pipeline = [
     { $search: { index: 'wallpaper_search', compound } },
     { $addFields: { _searchScore: { $meta: 'searchScore' } } },
     { $match: match },
     { $sort: { _searchScore: -1, views: -1, downloadsCount: -1, _id: 1 } },
     { $limit: limit },
+  ];
+  if (idsOnly) return [...pipeline, { $project: { _id: 1, _searchScore: 1 } }];
+  return [...pipeline,
     { $lookup: { from: 'categories', localField: 'category', foreignField: '_id', as: 'category',
         pipeline: [{ $project: { name: 1, slug: 1 } }] } },
     { $addFields: { category: { $arrayElemAt: ['$category', 0] } } },
@@ -73,18 +76,19 @@ function buildTextFallbackQuery({ q, deviceType, excludeIds = [], now = new Date
  * Fetch one internal batch. Atlas first; $text fallback if Atlas errors
  * (e.g. SearchNotEnabled) or returns 0 results on the first batch.
  */
-async function fetchSearchBatch(Wallpaper, { q, deviceType, limit = 50, excludeIds = [], now = new Date(), expansion } = {}) {
+async function fetchSearchBatch(Wallpaper, { q, deviceType, limit = 50, excludeIds = [], now = new Date(), expansion, idsOnly = false } = {}) {
   const first = excludeIds.length === 0;
   try {
-    const rows = await Wallpaper.aggregate(buildAtlasPipeline({ q, deviceType, limit, excludeIds, now, expansion }));
+    const rows = await Wallpaper.aggregate(buildAtlasPipeline({ q, deviceType, limit, excludeIds, now, expansion, idsOnly }));
     if (rows.length || !first) return rows;
   } catch (_) { /* fall through to $text */ }
   const filter = buildTextFallbackQuery({ q, deviceType, excludeIds, now });
-  return Wallpaper.find(filter, { _searchScore: { $meta: 'textScore' } })
+  const projection = { ...(idsOnly ? { _id: 1 } : {}), _searchScore: { $meta: 'textScore' } };
+  let query = Wallpaper.find(filter, projection)
     .sort({ _searchScore: { $meta: 'textScore' }, views: -1, downloadsCount: -1, _id: 1 })
-    .limit(limit)
-    .populate('category', 'name slug')
-    .lean();
+    .limit(limit);
+  if (!idsOnly) query = query.populate('category', 'name slug');
+  return query.lean();
 }
 
 module.exports = { buildAtlasPipeline, buildTextFallbackQuery, fetchSearchBatch, PRIMARY };

@@ -1,6 +1,6 @@
 # Eclipse Fantasy — Semantic Search Engine
 
-[![Tests](https://img.shields.io/badge/tests-250%20passing-brightgreen.svg)](./backend/test/)
+[![Tests](https://img.shields.io/badge/tests-260%20passing-brightgreen.svg)](./backend/test/)
 [![Node](https://img.shields.io/badge/node-20.x%20or%20%3E%3D22-blue.svg)](https://nodejs.org/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-Atlas%20Search-green.svg)](https://www.mongodb.com/atlas/database)
 [![Peak Throughput](https://img.shields.io/badge/in--process%20peak-28.4k%20QPS-purple.svg)](#concurrency-ladder-1k--20k-concurrent-searches)
@@ -131,10 +131,35 @@ Request 2..N (with sessionId)
 In live mode, Atlas ranks the initial pool and the session stores document IDs.
 Each page hydrates its IDs from MongoDB, preserving rank and excluding wallpapers
 that have since become drafts, pending deletion, or scheduled for the future.
+The initial Atlas query returns only IDs and scores, without category population.
+
+For numbered pagination, send `q`, `page` and a constant `limit` from page 1 onward.
+Each numbered page addresses a fixed window of unique ranked IDs and hydrates only
+that window: page 10 does not fetch pages 1–9. Withdrawals can leave short or empty
+pages; check `hasMore`, rather than page length, before stopping. Numbered
+`totalPages` counts rank windows. The visible `total` stays `unknown` until a
+session has traversed the whole pool; a cold jump cannot establish that count.
+Without `sessionId`, each request ranks a fresh pool (one ranking operation plus
+one hydration query, with a text fallback if Atlas fails). Changes to ranking or
+visibility between independent requests can shift results. Use the private session
+for a stable ranked pool. Omitting `page` advances the cursor and refills filtered
+pages; choose that mode from the first request when full pages are required.
 
 ### 6. Write-path resilience — [`aiGraphService.js`](./backend/src/services/aiGraphService.js), [`draftRetryWorker.js`](./backend/src/workers/draftRetryWorker.js)
 
-The engine uses AI only to discover new words, never during a search. If none of Gemini 2.5 Flash, Groq Llama-3.3-70B or OpenAI responds, the wallpaper is saved as a **draft** and an exponential-backoff worker retries (2 m → 4 m → 8 m … capped at 60 m, abandoned after 10 attempts). Uploads never fail because an LLM provider is down.
+The engine uses AI only to discover new words, never during a search. Upload
+processing makes one fallback pass through the configured providers (Gemini 2.5
+Flash, Groq Llama-3.3-70B and OpenAI), persisting partial expansions. It does not
+sleep or repeat that pass in the request. The initial pass can still wait up to
+about 30 seconds with three providers at their 10-second timeouts, plus database
+and graph work; this is not a fully asynchronous upload API.
+
+Missing expansions or provider failures return **draft** status and
+`unprocessedWords`. The integrating upload handler must save the wallpaper with
+that status and call `queueDraftJob` after saving; this drop-in repository does
+not contain an upload route. The background worker retries only missing words
+with persisted backoff (2 m → 4 m → 8 m … capped at 60 m, abandoned after 10
+attempts), then restores the requested published or scheduled status.
 
 ---
 
@@ -173,21 +198,23 @@ npm test
 
 ### Execution summary
 
-Verified on **2026-10-20**, for the bug-audit changes based on [commit `245a1a1`](https://github.com/kanaboina/EclipseSearch/commit/245a1a19888023da1585f04d9bb4f91bab0ac9a5), using **Node.js v24.21.0**, **npm 11.19.0**, and **Ubuntu 26.04.1**.
+Verified on **2026-10-21**, for the pagination/cache/upload corrections based on [commit `c583dc6`](https://github.com/kanaboina/EclipseSearch/commit/c583dc6a087b088723572289c62ccfb872eb17aa), using **Node.js v24.21.0**, **npm 11.19.0**, and **Ubuntu 26.04.1**.
 
 ```text
 Command:         npm test --prefix backend  (from repository root)
-Test files:       22
-Total tests:     250
-Passed:          250
+Test files:       23
+Total tests:     260
+Passed:          260
 Failed:            0
 Cancelled:         0
 Skipped:           0
 Pass rate:      100%
-Runner duration: 8.634 s
+Runner duration: 5.885 s
 ```
 
-This audit adds **33 regression tests**: 30 in `bugAudit.test.js` and 3 in `edgeWorker.test.js`, alongside the earlier 21 regressions. Counts include the server lifecycle parent test and its 9 subtests. Durations are observations from this run, not performance guarantees.
+This audit adds **33 regression tests**: 30 in `bugAudit.test.js` and 3 in `edgeWorker.test.js`, alongside the earlier 21 regressions. The follow-up adds 10 tests in `continuationRegression.test.js` for constant hydration cost, fixed page boundaries, retry handoff and cache continuation. Counts include the server lifecycle parent test and its 9 subtests. Durations are observations from this run, not performance guarantees.
+
+The first full follow-up run failed an existing hub-traversal maximum-time gate (17.183 ms versus 10 ms). The isolated latency suite and the full rerun passed without changing code or thresholds.
 
 The suite exercises a generated catalog, synthetic AI provider responses, MongoDB model/collection fixtures, an HTTP server, and a simulated Worker Cache API. It does **not** verify a live Atlas cluster, real AI providers, or a deployed Cloudflare Worker. Live Atlas verification requires a configured compatible database.
 
@@ -215,21 +242,22 @@ The suite exercises a generated catalog, synthetic AI provider responses, MongoD
 | `progressiveSearch.test.js` | 10 | ✅ | searchKey edge cases (null, falsy, whitespace), exported constants, empty pool in legacy and ID-first mode, custom batchSize, session isolation, doc reordering, session introspection |
 | `edgeCases.test.js` | 16 | ✅ | Lifecycle cache invalidation, expandQuerySemantically edge cases (empty, unknown, multi-word, TOP_TERMS cap), charMask/popcount boundaries, analyzeQuery hyphens and emoji, normalizeTokenStrict, dataset generator validation |
 | `prRegression.test.js` | 17 | ✅ | Complete pagination, hydration retries, concurrent sessions, semantic retrieval, live visibility, model registration, partial expansion persistence, draft retries, persisted unlinking, backfill accounting, totals, and HTTP input/error boundaries |
-| `edgeWorker.test.js` | 7 | ✅ | Private continuation sessions, caching complete results without session sharing, ignoring obsolete cached pages, non-JSON forwarding, cache flags, origin URL joining, and cache failures |
+| `edgeWorker.test.js` | 7 | ✅ | Session-free cached first pages, stateless continuation, ignoring obsolete cached pages, non-JSON forwarding, cache flags, origin URL joining, and cache failures |
 
+| `continuationRegression.test.js` | 10 | ✅ | Cold page query counts, withdrawal boundaries, hydration retries, totals, ID-only Atlas/text ranking, upload-to-worker retries and cached HTTP continuation |
 | `bugAudit.test.js` | 30 | ✅ | Capacity growth, exhaustive bounded-path/scoring comparisons, typo pruning and invalidation, explicit/replayed pages, expired/mismatched sessions, invalid IDs/URLs/weights, async timing, patch edits, worker batching/status, cache retries/races, and script behavior |
 
 ### Stress test results (10,000-word synthetic graph)
 
-These results are from the same 250-test run above. **Test duration** is the Node test runner's duration for the entire test, including fixtures and assertions; it is not an isolated operation latency or a throughput measurement.
+These results are from the same 260-test run above. **Test duration** is the Node test runner's duration for the entire test, including fixtures and assertions; it is not an isolated operation latency or a throughput measurement.
 
 | ID | Scenario | Passing assertions | Test duration (ms) | Result |
 |:---:|:---|:---|---:|:---:|
-| S1 | Build `NeighborIndex` (K=15) over 10k words | Internal build < 3,000 ms; sampled nodes have ≤ 15 neighbors | 240.20 | ✅ |
-| S2 | 5,000 sequential `expand()` calls across the vocabulary | > 1,000 expansions/s; each expansion returns terms | 945.62 | ✅ |
-| S3 | 2,000 concurrent identical searches | Exactly 1 pool fetch; every caller gets 20 rows; `pending = 0` | 603.07 | ✅ |
-| S4 | 3,000 concurrent users × 3 pages (9,000 searches) | 3,000 unique session IDs; zero duplicates; > 1,000 searches/s | 983.49 | ✅ |
-| S5 | 10,000-token query + 1,000 repeated typo lookups | Internal expansion < 10 s; repeated typo lookups return the same cached result | 451.30 | ✅ |
+| S1 | Build `NeighborIndex` (K=15) over 10k words | Internal build < 3,000 ms; sampled nodes have ≤ 15 neighbors | 232.77 | ✅ |
+| S2 | 5,000 sequential `expand()` calls across the vocabulary | > 1,000 expansions/s; each expansion returns terms | 693.03 | ✅ |
+| S3 | 2,000 concurrent identical searches | Exactly 1 pool fetch; every caller gets 20 rows; `pending = 0` | 412.36 | ✅ |
+| S4 | 3,000 concurrent users × 3 pages (9,000 searches) | 3,000 unique session IDs; zero duplicates; > 1,000 searches/s | 653.58 | ✅ |
+| S5 | 10,000-token query + 1,000 repeated typo lookups | Internal expansion < 10 s; repeated typo lookups return the same cached result | 301.02 | ✅ |
 
 > [!NOTE]
 > S5 calls the traversal-based `expandQuerySemantically` function directly with all 10,000 vocabulary words. Its full test duration was 0.451 s in the 8.634 s suite run. Term scoring groups equal absence penalties for large queries and retains only the requested top terms. The HTTP API rejects queries longer than 500 characters or 20 whitespace-delimited tokens.
@@ -253,7 +281,7 @@ The concurrency ladder and HTTP load sections retain historical measurements; th
 | Database I/O | Mocked in-memory `fetchPool` (100 rows) to isolate application-layer cost |
 
 > [!WARNING]
-> Because the database is mocked, these numbers measure the **engine's own overhead**: NLP, expansion, coalescing, sessions and slicing. Live mode ranks the initial pool through Atlas and hydrates each page from MongoDB to recheck visibility. Those database round trips are not measured by the in-process ladder. The edge worker caches only complete result sets and bypasses caching for responses that need continuation sessions.
+> Because the database is mocked, these numbers measure the **engine's own overhead**: NLP, expansion, coalescing, sessions and slicing. Live mode ranks the initial pool through Atlas and hydrates each page from MongoDB to recheck visibility. Those database round trips are not measured by the in-process ladder. The edge worker caches public first pages without session IDs and supplies a `nextPage` URL; later pages and private sessions bypass its cache.
 
 ### Concurrency ladder (1k → 20k concurrent searches)
 
@@ -356,7 +384,7 @@ The traversal rows describe write-time work for the precomputed index. The expan
 ```bash
 cd backend
 
-npm test                              # full suite: unit + integration + SLA + stress (250 tests)
+npm test                              # full suite: unit + integration + SLA + stress (260 tests)
 node --test test/stress.test.js       # stress scenarios only
 npm run benchmark                     # component micro-benchmarks -> test-metrics-10k.json
 node --expose-gc scripts/concurrency-ladder.js   # 1k -> 20k ladder -> concurrency-ladder-results.json
@@ -396,7 +424,7 @@ Export `MONGODB_URI` into the process environment to target a compatible live At
 
 ### Search Relevance Results
 
-Reverified on **2026-10-20**, for the same audit changes and Node.js v24.21.0 runtime as the 250-test run, with `npm run test:relevance --prefix backend`. The 25-query golden set (K = 10) uses the 10k mock Atlas catalog. Results match the [existing relevance snapshot](./backend/benchmark-comparison/2026-10-20/relevance-after.json).
+Reverified on **2026-10-21**, for the same follow-up changes and Node.js v24.21.0 runtime as the 260-test run, with `npm run test:relevance --prefix backend`. The 25-query golden set (K = 10) uses the 10k mock Atlas catalog. Results match the [existing relevance snapshot](./backend/benchmark-comparison/2026-10-20/relevance-after.json).
 
 | Metric | Score |
 |:---|:---:|
@@ -468,9 +496,10 @@ EclipseSearch/
     │   │   └── wallpaperDTO.js             # Client-safe projection
     │   └── workers/
     │       └── draftRetryWorker.js         # Exponential-backoff retry worker
-    └── test/                               # 22 files · 250 tests
+    └── test/                               # 23 files · 260 tests
         ├── aiGraphService.test.js          (14)
         ├── bugAudit.test.js                (30)
+        ├── continuationRegression.test.js    (10)
         ├── draftWorkerLifecycle.test.js    (10)
         ├── edgeCases.test.js              (16)
         ├── edgeWorker.test.js             (7)
@@ -529,10 +558,13 @@ and semantic graph initialization must succeed before the server starts.
 
 Deploy [`src/edge/searchCacheWorker.js`](./backend/src/edge/searchCacheWorker.js) as a Cloudflare Worker and set the `ORIGIN` environment variable to the backend URL. The worker:
 
-- caches complete `GET /api/search` result sets **without** a request `sessionId`; responses with more pages bypass caching and keep their private continuation session
+- caches the first `GET /api/search` page **without** a request `sessionId`, including responses with `hasMore: true`; removes the private origin session ID
+- supplies a relative `nextPage` URL containing `q`, `page=2` and the request filters; clients follow it, then increment `page` while preserving `q`, `limit` and filters
+- bypasses cache for later pages and requests with `sessionId`; does not share private cursor state
+- forces numbered page 1 at origin so withdrawals cannot refill it with IDs from page 2 of the same ranked pool
 - normalises `q` by lower-casing, collapsing whitespace and sorting tokens, so equivalent queries share one entry
-- marks cache hits with `fromCache: true` and fresh complete origin responses with `fromCache: false`
-- sets `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`
+- marks cache hits with `fromCache: true` and fresh cacheable origin responses with `fromCache: false`
+- sets `Cache-Control: public, s-maxage=60, stale-while-revalidate=300`; cached cards can remain stale within the cache lifetime, so deployments needing immediate withdrawal must purge affected entries
 
 ---
 
@@ -577,10 +609,10 @@ See [`docs/atlas-search.md`](./backend/docs/atlas-search.md) for details.
 | Topic | Note |
 |:---|:---|
 | **Session affinity** | Progressive sessions live in process memory. Behind multiple replicas, route by `sessionId` (sticky sessions) or move the session store to a shared cache. |
-| **Session memory** | Each session holds up to 200 rows plus a `Set`. The default LRU cap is 5,000 sessions with a 15-minute TTL. Size `max` from the available heap. |
+| **Session memory** | Each session holds up to 200 IDs/scores (live) or rows (demo), plus a `Set`. The default LRU cap is 5,000 sessions with a 15-minute TTL. Size `max` from the available heap. |
 | **Index consistency** | `NeighborIndex` updates synchronously inside the write path. Readers in the same process see the new neighbors immediately after the write resolves. Other replicas pick them up on restart or on their own ingestion events. |
 | **Query length** | The HTTP API enforces 500 characters and 20 whitespace-delimited tokens; direct library callers should bound their inputs. |
-| **Pagination** | Explicit `page` selects/replays visible results; omitting it advances the session cursor. Expired/unknown sessions without `q` return HTTP 410. Query/device mismatches return HTTP 400. Empty results report 0 total pages. |
+| **Pagination** | Explicit `page` selects/replays a fixed ranked window without querying preceding pages; withdrawals may leave it short. Omitting `page` advances/refills the session cursor. Expired/unknown sessions without `q` return HTTP 410. Query/device mismatches return HTTP 400. Empty results report 0 total pages. |
 | **Worker batches** | Each tick recovers stale jobs once and processes at most 10 jobs (configurable `batchSize`). Successful retries preserve scheduled status. |
 | **Typo ranking** | With min-cost aggregation, typo-inherited neighbors can outrank the corrected word for short typos (`phenix`, `samuari`). Possible fix: give the corrected word a cost-0 slot. |
 | **Typo-cache invalidation** | The dictionary and typo LRU refresh on graph writes through `addEdges`, `rebuildGraph` or index rebuild/update, including vocabulary replacements of the same size. |

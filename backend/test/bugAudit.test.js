@@ -105,21 +105,21 @@ for (const mode of ['legacy', 'id-first']) {
     assert.deepEqual(ids(next), ['3', '4', '5']);
     const pastEnd = await ps.search({ sessionId: second.sessionId, page: 99999999, limit: 3 });
     assert.deepEqual(ids(pastEnd), []);
-    assert.equal(pastEnd.total, 9);
+    assert.equal(pastEnd.total, mode === 'legacy' ? 9 : undefined);
     assert.equal(pastEnd.hasMore, false);
   });
 }
 
-test('explicit ID pages count visible unique documents and recheck visibility on replay', async () => {
+test('explicit ID pages select unique rank windows and recheck visibility on replay', async () => {
   let hidden = new Set(['0', '4']);
   const ps = createProgressiveSearch({ resolvePool: async () => ['0','1','1','2','3','4','5','6'].map((docId) => ({ docId })),
     fetchDocs: async ({ ids }) => ids.filter((id) => !hidden.has(id)).map((_id) => ({ _id })) });
   const second = await ps.search({ q: 'dragon', page: 2, limit: 2 });
-  assert.deepEqual(ids(second), ['3', '5']);
+  assert.deepEqual(ids(second), ['2', '3']);
   hidden.add('3');
   const replay = await ps.search({ sessionId: second.sessionId, page: 2, limit: 2 });
-  assert.deepEqual(ids(replay), ['5', '6']);
-  assert.equal(replay.total, 4);
+  assert.deepEqual(ids(replay), ['2']);
+  assert.equal(replay.total, undefined);
 });
 
 test('expired sessions without a query return 410 and mismatched searches return 400', async (t) => {

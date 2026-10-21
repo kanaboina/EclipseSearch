@@ -43,6 +43,17 @@ function createProgressiveSearch({
 } = {}) {
   const idFirstMode = typeof resolvePool === 'function' && typeof fetchDocs === 'function';
 
+  // Normalize duplicates before computing numbered-page offsets.
+  function uniqueRows(rows, getId) {
+    const seen = new Set();
+    return rows.filter((row) => {
+      const id = String(getId(row));
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  }
+
   /** Build an ID-first session: ranked docId list in memory, no docs fetched yet. */
   async function buildIdFirstSession(q, deviceType) {
     const sfKey = `ids:${searchKey(q)}:${deviceType || 'all'}`;
@@ -50,7 +61,7 @@ function createProgressiveSearch({
     return {
       mode: 'id-first',
       // ranked: [{ docId, score }] — only IDs stored in session
-      ranked,
+      ranked: uniqueRows(ranked, (row) => row.docId),
       cursor: 0,
       seenIds: new Set(),
       q,
@@ -70,7 +81,7 @@ function createProgressiveSearch({
     const topScore = rows.length && typeof rows[0].score === 'number' ? rows[0].score : null;
     const cutoff = topScore && minScoreRatio > 0 ? topScore * minScoreRatio : null;
     const ranked = cutoff === null ? rows : rows.filter((r) => r.score >= cutoff);
-    return { mode: 'legacy', ranked, cursor: 0, seenIds: new Set(), q, deviceType };
+    return { mode: 'legacy', ranked: uniqueRows(ranked, (row) => row._id), cursor: 0, seenIds: new Set(), q, deviceType };
   }
 
   async function search({ q, sessionId, page, limit = batchSize, deviceType } = {}) {
@@ -102,26 +113,53 @@ function createProgressiveSearch({
     const previous = session.pending || Promise.resolve();
     const pending = previous.then(async () => {
       const state = { ...session, seenIds: new Set(session.seenIds) };
-      if (explicitPage !== undefined) {
-        state.cursor = 0;
-        state.seenIds = new Set();
-        state.returnedCount = 0;
-        let skip = (explicitPage - 1) * limit;
-        while (skip > 0 && state.cursor < state.ranked.length) {
-          const skipped = await advance(state, id, Math.min(skip, limit));
-          skip -= skipped.data.length;
-        }
-      }
-      const resultPage = explicitPage ?? Math.floor((state.returnedCount || state.seenIds.size) / limit) + 1;
-      const result = await advance(state, id, limit);
-      // Commit only after the entire request succeeds, including any skipped pages.
+      const resultPage = explicitPage ?? session.nextPage ?? 1;
+      const result = explicitPage === undefined
+        ? await advance(state, id, limit)
+        : await numberedPage(state, id, explicitPage, limit);
+      // Commit only after hydration succeeds; failed requests preserve the cursor.
       session.cursor = state.cursor;
       session.seenIds = state.seenIds;
       session.returnedCount = state.returnedCount;
+      session.countComplete = state.countComplete;
+      session.nextPage = resultPage + 1;
       return { ...result, page: resultPage };
     });
     session.pending = pending.then(() => {}, () => {});
     return pending;
+  }
+
+  // Numbered pages address fixed windows of unique ranked IDs. Skipping a window
+  // never hydrates it, and withdrawals do not move later results into earlier pages.
+  async function numberedPage(session, id, page, limit) {
+    const start = Math.min((page - 1) * limit, session.ranked.length);
+    const end = Math.min(start + limit, session.ranked.length);
+    const window = session.ranked.slice(start, end);
+    let data;
+    if (session.mode === 'id-first') {
+      const ids = window.map((row) => String(row.docId));
+      const docs = ids.length ? await fetchDocs({ ids, deviceType: session.deviceType }) : [];
+      const byId = new Map(docs.map((doc) => [String(doc._id), doc]));
+      data = ids.map((docId) => byId.get(docId)).filter(Boolean);
+    } else {
+      data = window;
+    }
+    if (start === 0) {
+      session.countComplete = true;
+      session.returnedCount = 0;
+    } else if (start !== session.cursor) {
+      // Earlier windows were not checked, so their current visible count is unknown.
+      session.countComplete = false;
+      session.returnedCount = 0;
+    }
+    session.returnedCount = (session.returnedCount || 0) + data.length;
+    session.cursor = end;
+    session.seenIds = new Set(session.ranked.slice(0, end).map((row) =>
+      String(session.mode === 'id-first' ? row.docId : row._id)));
+    const hasMore = end < session.ranked.length;
+    const total = session.mode === 'legacy' ? session.ranked.length
+      : !hasMore && session.countComplete !== false ? session.returnedCount : undefined;
+    return { sessionId: id, data, hasMore, total, totalPages: Math.ceil(session.ranked.length / limit) };
   }
 
   async function advance(session, id, limit) {
@@ -149,7 +187,7 @@ function createProgressiveSearch({
       session.seenIds = seenIds;
       session.returnedCount = (session.returnedCount || 0) + data.length;
       const hasMore = cursor < session.ranked.length;
-      return { sessionId: id, data, hasMore, total: hasMore ? undefined : session.returnedCount };
+      return { sessionId: id, data, hasMore, total: hasMore || session.countComplete === false ? undefined : session.returnedCount };
     }
 
     // Legacy mode: slice ranked pool.

@@ -173,25 +173,12 @@ async function expandWords(words, deps = {}) {
   const unseen = await findUnseenWords(words, deps.Model);
   if (!unseen.length) return { expanded: [], unseen: [], missing: [] };
 
-  let allExpanded = [];
-  let remaining = unseen;
-  const maxRetries = 3;
-
-  for (let attempt = 0; attempt < maxRetries && remaining.length; attempt++) {
-    const { expansions, missing } = await callLlmWithFallback(remaining, deps.providers);
-    const expanded = Object.keys(expansions);
-    if (expanded.length) {
-      await persistExpansionsToGraph(expansions, deps);
-      allExpanded.push(...expanded);
-    }
-    remaining = missing;
-    if (remaining.length && attempt < maxRetries - 1) {
-      // Small delay before retrying missing words
-      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-    }
-  }
-
-  return { expanded: allExpanded, unseen, missing: remaining };
+  // One provider chain per attempt. Missing words are retried by the persisted
+  // background job, never by sleeping/repeating the chain inside an upload.
+  const { expansions, missing } = await callLlmWithFallback(unseen, deps.providers);
+  const expanded = Object.keys(expansions);
+  if (expanded.length) await persistExpansionsToGraph(expansions, deps);
+  return { expanded, unseen, missing };
 }
 
 /**
@@ -225,7 +212,8 @@ async function linkWallpaperToGraph(docId, words, { Model = SemanticNode } = {})
 
 /**
  * Called after Sharp/R2 upload. Returns the status the wallpaper must be saved with.
- * On AI failure: status 'draft' + AiIngestionJob so assets stay intact and hidden.
+ * On AI failure: returns status 'draft' and missing words so assets stay hidden.
+ * The caller must save the wallpaper and call queueDraftJob to persist retries.
  * wallpaperId may be supplied via payload._id (create the job after save if absent;
  * see `queueDraftJob`).
  *
@@ -239,7 +227,7 @@ async function processWallpaperSemanticsOnUpload(payload, requestedStatus = 'pub
     const res = await expandWords(words, deps);
     // Link the wallpaper's document ID to all its words in the inverted index.
     if (wallpaperId) await linkWallpaperToGraph(wallpaperId, words, deps);
-    // If some words couldn't be expanded, queue a draft job to retry later
+    // Return missing words for the caller to persist with queueDraftJob after save
     if (res.missing && res.missing.length) {
       return { status: 'draft', unprocessedWords: res.missing, error: `Missing expansions for: ${res.missing.join(', ')}` };
     }

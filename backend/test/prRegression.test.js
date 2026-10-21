@@ -186,7 +186,10 @@ test('live pagination rechecks visibility and device on every page', async (t) =
   t.mock.method(mongoose, 'connect', async () => mongoose);
   t.mock.method(SemanticNode, 'find', () => queryResult([]));
   const rows = Array.from({ length: 5 }, (_, i) => ({ _id: String(i), title: 'Dragon', status: 'published' }));
-  t.mock.method(Wallpaper, 'aggregate', async () => rows);
+  t.mock.method(Wallpaper, 'aggregate', async (pipeline) => {
+    assert.deepEqual(pipeline.at(-1), { $project: { _id: 1, _searchScore: 1 } });
+    return rows;
+  });
   t.mock.method(Wallpaper, 'find', (filter) => {
     assert.equal(filter.deviceType, 'phone');
     assert.deepEqual(filter.status, { $ne: 'draft' });

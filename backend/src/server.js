@@ -29,7 +29,7 @@ async function setupSearchEngine({ mongoUri = process.env.MONGODB_URI } = {}) {
     resolvePool = async ({ q, deviceType, limit }) => {
       const { terms } = searchIndex.expand(q);
       const rows = await fetchSearchBatch(Wallpaper, {
-        q, deviceType, limit, expansion: { terms }, now: new Date(),
+        q, deviceType, limit, expansion: { terms }, now: new Date(), idsOnly: true,
       });
       return rows.map((row) => ({ docId: String(row._id), score: row._searchScore }));
     };
@@ -134,8 +134,8 @@ function createSearchHttpServer(engine) {
         });
 
         // Calculate pagination metadata
-        const totalResults = result.hasMore ? 'unknown' : result.total;
-        const totalPages = totalResults === 'unknown' ? 'unknown' : Math.ceil(totalResults / limit);
+        const totalResults = result.hasMore || result.total === undefined ? 'unknown' : result.total;
+        const totalPages = result.totalPages ?? (totalResults === 'unknown' ? 'unknown' : Math.ceil(totalResults / limit));
 
         res.writeHead(200);
         res.end(JSON.stringify({
